@@ -99,12 +99,69 @@ function extractOpenAIText(payload: any) {
 }
 
 function extractGeminiText(payload: any) {
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text.trim();
+  }
+
+  const interactionText = payload?.output
+    ?.map((item: { content?: Array<{ type?: string; text?: string }> }) =>
+      (item?.content ?? [])
+        .map((part) => (part?.type === "output_text" && typeof part?.text === "string" ? part.text : ""))
+        .filter(Boolean)
+        .join("\n")
+    )
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  if (interactionText) {
+    return interactionText;
+  }
+
   const text = payload?.candidates?.[0]?.content?.parts
     ?.map((part: { text?: string }) => (typeof part?.text === "string" ? part.text : ""))
     .join("\n")
     .trim();
 
   return text || "";
+}
+
+async function requestGeminiResponse(history: ChatMessage[], prompt: string, geminiKey: string) {
+  const aiResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": geminiKey,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: defaultGeminiModel,
+      input: [
+        {
+          type: "text",
+          text: [
+            "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara.",
+            "Usa Google Search de forma autonoma cuando la pregunta requiera actualidad o precision factual.",
+            "Historial reciente:",
+            ...cleanHistory(history).map((message) => `${message.role}: ${message.content}`),
+            `Mensaje actual: ${prompt}`
+          ].join("\n")
+        }
+      ],
+      tools: [{ type: "google_search" }]
+    })
+  });
+
+  const payload = await aiResponse.json().catch(() => null);
+  if (!aiResponse.ok) {
+    throw new Error(payload?.error?.message ?? "Gemini no pudo responder.");
+  }
+
+  const output = extractGeminiText(payload);
+  if (!output) {
+    throw new Error("Gemini no devolvio texto util.");
+  }
+
+  return output;
 }
 
 function buildFallbackReply(prompt: string) {
@@ -160,50 +217,23 @@ export default async function handler(request: ApiRequest, response: ApiResponse
 
     const geminiKey = process.env.GEMINI_API_KEY?.trim();
     const openAiKey = process.env.OPENAI_API_KEY?.trim();
-    const preferGemini = searchProvider === "gemini" || (searchProvider === "auto" && needsSearch && geminiKey);
+    const preferGemini =
+      searchProvider === "gemini" || (searchProvider === "auto" && needsSearch && geminiKey && !openAiKey);
 
     if (preferGemini && geminiKey) {
-      const aiResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-        method: "POST",
-        headers: {
-          "x-goog-api-key": geminiKey,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: defaultGeminiModel,
-          input: [
-            {
-              type: "text",
-              text: [
-                "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara.",
-                "Si el tema depende de informacion reciente, usa Google Search de forma autonoma.",
-                "Si citas datos actuales, apoyalos en resultados de busqueda cuando sea necesario.",
-                "Historial reciente:",
-                ...cleanHistory(history).map((message) => `${message.role}: ${message.content}`),
-                `Mensaje actual: ${prompt}`
-              ].join("\n")
-            }
-          ],
-          tools: [{ type: "google_search" }]
-        })
-      });
-
-      const payload = await aiResponse.json().catch(() => null);
-      if (!aiResponse.ok) {
-        throw new Error(payload?.error?.message ?? "Gemini no pudo responder.");
+      try {
+        const output = await requestGeminiResponse(history, prompt, geminiKey);
+        response.status(200).json({
+          ok: true,
+          output,
+          provider: "gemini"
+        });
+        return;
+      } catch (error) {
+        if (!openAiKey) {
+          throw error;
+        }
       }
-
-      const output = typeof payload?.output_text === "string" ? payload.output_text.trim() : "";
-      if (!output) {
-        throw new Error("Gemini no devolvio texto util.");
-      }
-
-      response.status(200).json({
-        ok: true,
-        output,
-        provider: "gemini"
-      });
-      return;
     }
 
     if (openAiKey) {
@@ -253,43 +283,7 @@ export default async function handler(request: ApiRequest, response: ApiResponse
     }
 
     if (geminiKey) {
-      const aiResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-        method: "POST",
-        headers: {
-          "x-goog-api-key": geminiKey,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: defaultGeminiModel,
-          input: [
-            {
-              type: "text",
-              text: [
-                "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara.",
-                "Usa Google Search de forma autonoma cuando la pregunta requiera actualidad o precision factual.",
-                "Historial reciente:",
-                ...cleanHistory(history).map((message) => `${message.role}: ${message.content}`),
-                `Mensaje actual: ${prompt}`
-              ].join("\n")
-            }
-          ],
-          tools: [{ type: "google_search" }]
-        })
-      });
-
-      const payload = await aiResponse.json().catch(() => null);
-      if (!aiResponse.ok) {
-        throw new Error(payload?.error?.message ?? "Gemini no pudo responder.");
-      }
-
-      const output =
-        typeof payload?.output_text === "string" && payload.output_text.trim()
-          ? payload.output_text.trim()
-          : extractGeminiText(payload);
-      if (!output) {
-        throw new Error("Gemini no devolvio texto util.");
-      }
-
+      const output = await requestGeminiResponse(history, prompt, geminiKey);
       response.status(200).json({
         ok: true,
         output,
