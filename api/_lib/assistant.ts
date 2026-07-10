@@ -77,6 +77,19 @@ function buildFallbackReply(prompt: string) {
     })}.`;
   }
 
+  if (normalized.includes("fecha") || normalized.includes("dia")) {
+    return `Hoy es ${now.toLocaleDateString("es-CO", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric"
+    })}.`;
+  }
+
+  if (normalized.includes("capital de colombia")) {
+    return "La capital de Colombia es Bogota.";
+  }
+
   if (normalized.includes("hola")) {
     return "Hola. Ya quedo activo el modo web. Si conectas una API key en el backend, tambien puedo responder con IA completa y transcribir voz.";
   }
@@ -84,7 +97,7 @@ function buildFallbackReply(prompt: string) {
   return [
     "Ya estoy respondiendo en el modo web de CoCreate.",
     "En este despliegue todavia falta configurar `OPENAI_API_KEY` o `GEMINI_API_KEY` en Vercel para respuestas de IA completas.",
-    `Tu mensaje fue: "${prompt.trim()}"`,
+    `Tu mensaje fue: \"${prompt.trim()}\"`,
     "Puedo seguir sirviendo como fallback y darte respuestas basicas mientras activamos la clave del backend."
   ].join("\n\n");
 }

@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { generateAssistantReply, transcribeAudio } from "./server/assistant";
+import { generateAssistantReply, transcribeAudio } from "./api/_lib/assistant";
 
 function readJsonBody(request: import("node:http").IncomingMessage) {
   return new Promise<Record<string, unknown>>((resolve, reject) => {

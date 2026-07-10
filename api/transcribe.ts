@@ -1,4 +1,4 @@
-import { transcribeAudio } from "../server/assistant";
+import { transcribeAudio } from "./_lib/assistant";
 
 type ApiRequest = {
   method?: string;

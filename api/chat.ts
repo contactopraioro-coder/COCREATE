@@ -1,4 +1,4 @@
-import { generateAssistantReply } from "../server/assistant";
+import { generateAssistantReply } from "./_lib/assistant";
 
 type ApiRequest = {
   method?: string;
