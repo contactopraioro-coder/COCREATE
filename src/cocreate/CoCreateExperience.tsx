@@ -8,12 +8,14 @@ import {
   Compass,
   FileCode2,
   ImagePlus,
+  LayoutPanelLeft,
   Library,
   LogOut,
-  Menu,
   Mic,
   MoonStar,
   MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRightOpen,
   Paperclip,
   Plus,
@@ -88,18 +90,21 @@ type ChatMessage = {
   body: string;
 };
 
+type ThreadMessages = Record<string, ChatMessage[]>;
+
 type PersistedWorkbenchSnapshot = {
   theme: ThemeMode;
   activeMode: ActiveMode;
   threads: Thread[];
+  messagesByThread: ThreadMessages;
   activeThreadId: string;
   activeTool: string;
+  sidebarCollapsed: boolean;
   rightPanelOpen: boolean;
   profileOpen: boolean;
   searchOpen: boolean;
   webEnabled: boolean;
   prompt: string;
-  messages: ChatMessage[];
   phase: RecorderPhase;
   status: string;
   model: string;
@@ -233,7 +238,7 @@ const isMessage = (value: unknown): value is ChatMessage =>
 const buildSnapshot = (input: PersistedWorkbenchSnapshot): PersistedWorkbenchSnapshot => ({
   ...input,
   threads: input.threads.length ? input.threads : initialThreads,
-  messages: input.messages.length ? input.messages : defaultMessages
+  messagesByThread: Object.keys(input.messagesByThread).length ? input.messagesByThread : { [initialThreads[0].id]: defaultMessages }
 });
 
 const readSnapshot = (value: unknown): PersistedWorkbenchSnapshot | null => {
@@ -242,22 +247,36 @@ const readSnapshot = (value: unknown): PersistedWorkbenchSnapshot | null => {
   }
 
   const candidate = value as Partial<PersistedWorkbenchSnapshot>;
+  const messagesByThread =
+    candidate.messagesByThread && typeof candidate.messagesByThread === "object"
+      ? Object.entries(candidate.messagesByThread).reduce<ThreadMessages>((accumulator, [threadId, messages]) => {
+          accumulator[threadId] = Array.isArray(messages) ? messages.filter(isMessage) : [];
+          return accumulator;
+        }, {})
+      : {};
+
+  const legacyMessages = Array.isArray(candidate.messages) ? candidate.messages.filter(isMessage) : defaultMessages;
+
   return buildSnapshot({
     theme: candidate.theme === "light" ? "light" : "dark",
     activeMode:
       candidate.activeMode === "live" || candidate.activeMode === "cocoding" ? candidate.activeMode : "chat",
     threads: Array.isArray(candidate.threads) ? candidate.threads.filter(isThread) : initialThreads,
+    messagesByThread: {
+      [initialThreads[0].id]: legacyMessages,
+      ...messagesByThread
+    },
     activeThreadId:
       typeof candidate.activeThreadId === "string" && candidate.activeThreadId
         ? candidate.activeThreadId
         : initialThreads[0].id,
     activeTool: typeof candidate.activeTool === "string" ? candidate.activeTool : "new",
+    sidebarCollapsed: typeof candidate.sidebarCollapsed === "boolean" ? candidate.sidebarCollapsed : false,
     rightPanelOpen: typeof candidate.rightPanelOpen === "boolean" ? candidate.rightPanelOpen : true,
     profileOpen: typeof candidate.profileOpen === "boolean" ? candidate.profileOpen : false,
     searchOpen: typeof candidate.searchOpen === "boolean" ? candidate.searchOpen : false,
     webEnabled: typeof candidate.webEnabled === "boolean" ? candidate.webEnabled : false,
     prompt: typeof candidate.prompt === "string" ? candidate.prompt : "",
-    messages: Array.isArray(candidate.messages) ? candidate.messages.filter(isMessage) : defaultMessages,
     phase:
       candidate.phase === "requesting" ||
       candidate.phase === "recording" ||
@@ -302,14 +321,15 @@ export function CoCreateExperience() {
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [activeMode, setActiveMode] = useState<ActiveMode>("chat");
   const [threads, setThreads] = useState<Thread[]>(initialThreads);
+  const [messagesByThread, setMessagesByThread] = useState<ThreadMessages>({ [initialThreads[0].id]: defaultMessages });
   const [activeThreadId, setActiveThreadId] = useState(initialThreads[0].id);
   const [activeTool, setActiveTool] = useState("new");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [profileOpen, setProfileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [webEnabled, setWebEnabled] = useState(false);
   const [prompt, setPrompt] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>(defaultMessages);
   const [attachments, setAttachments] = useState<File[]>([]);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
@@ -327,6 +347,7 @@ export function CoCreateExperience() {
   const [sessionId, setSessionId] = useState<string | null>(null);
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0];
+  const messages = messagesByThread[activeThreadId] ?? defaultMessages;
   const isRecording = phase === "recording";
   const canAnalyze = Boolean(savedRecording?.filePath && apiKey.trim() && phase !== "analyzing");
   const codexReady = Boolean(codexStatus?.available);
@@ -346,14 +367,15 @@ export function CoCreateExperience() {
             setTheme(snapshot.theme);
             setActiveMode(snapshot.activeMode);
             setThreads(snapshot.threads);
+            setMessagesByThread(snapshot.messagesByThread);
             setActiveThreadId(snapshot.activeThreadId);
             setActiveTool(snapshot.activeTool);
+            setSidebarCollapsed(snapshot.sidebarCollapsed);
             setRightPanelOpen(snapshot.rightPanelOpen);
             setProfileOpen(snapshot.profileOpen);
             setSearchOpen(snapshot.searchOpen);
             setWebEnabled(true);
             setPrompt(snapshot.prompt);
-            setMessages(snapshot.messages);
             setPhase(snapshot.phase === "recording" ? "idle" : snapshot.phase);
             setStatus("Sesión web restaurada.");
             setModel(snapshot.model || "gemini-3.5-flash");
@@ -393,14 +415,15 @@ export function CoCreateExperience() {
           setTheme(snapshot.theme);
           setActiveMode(snapshot.activeMode);
           setThreads(snapshot.threads);
+          setMessagesByThread(snapshot.messagesByThread);
           setActiveThreadId(snapshot.activeThreadId);
           setActiveTool(snapshot.activeTool);
+          setSidebarCollapsed(snapshot.sidebarCollapsed);
           setRightPanelOpen(snapshot.rightPanelOpen);
           setProfileOpen(snapshot.profileOpen);
           setSearchOpen(snapshot.searchOpen);
           setWebEnabled(snapshot.webEnabled);
           setPrompt(snapshot.prompt);
-          setMessages(snapshot.messages);
           setPhase(snapshot.phase === "recording" ? "idle" : snapshot.phase);
           setStatus("Sesión restaurada. Listo para continuar.");
           setModel(snapshot.model || payload.defaultGeminiModel);
@@ -461,14 +484,15 @@ export function CoCreateExperience() {
       theme,
       activeMode,
       threads,
+      messagesByThread,
       activeThreadId,
       activeTool,
+      sidebarCollapsed,
       rightPanelOpen,
       profileOpen,
       searchOpen,
       webEnabled,
       prompt,
-      messages,
       phase: phase === "recording" ? "ready" : phase,
       status,
       model,
@@ -512,7 +536,7 @@ export function CoCreateExperience() {
     activeTool,
     error,
     lastMimeType,
-    messages,
+    messagesByThread,
     model,
     notes,
     phase,
@@ -520,6 +544,7 @@ export function CoCreateExperience() {
     prompt,
     recordingName,
     rightPanelOpen,
+    sidebarCollapsed,
     savedRecording,
     searchOpen,
     status,
@@ -540,25 +565,33 @@ export function CoCreateExperience() {
   };
 
   const appendMessage = (role: MessageRole, body: string) => {
-    setMessages((current) => [...current, { id: createId(), role, body }]);
+    setMessagesByThread((current) => ({
+      ...current,
+      [activeThreadId]: [...(current[activeThreadId] ?? []), { id: createId(), role, body }]
+    }));
   };
 
   const createThread = () => {
+    const nextId = createId();
     const next: Thread = {
-      id: createId(),
+      id: nextId,
       title: "Nuevo chat",
       preview: "Sin mensajes todavía"
     };
     setThreads((current) => [next, ...current]);
     setActiveThreadId(next.id);
+    setSidebarCollapsed(false);
     setPrompt("");
-    setMessages([
-      {
-        id: createId(),
-        role: "assistant",
-        body: "Nuevo chat creado. Puedo ayudarte a diseñar, codear, revisar o convertir una captura en prompt."
-      }
-    ]);
+    setMessagesByThread((current) => ({
+      ...current,
+      [nextId]: [
+        {
+          id: createId(),
+          role: "assistant",
+          body: "Nuevo chat creado. Puedo ayudarte a diseñar, codear, revisar o convertir una captura en prompt."
+        }
+      ]
+    }));
     setStatus("Nuevo chat creado.");
     appendEvent("thread.created", { threadId: next.id, title: next.title });
   };
@@ -927,13 +960,23 @@ export function CoCreateExperience() {
   };
 
   return (
-    <main className={`workspace workspace-${theme}`}>
-      <aside className="sidebar">
+    <main className={`workspace workspace-${theme} ${sidebarCollapsed ? "workspace-sidebar-collapsed" : ""}`}>
+      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
         <div className="sidebar-top">
-          <button className="brand-mark" type="button" onClick={createThread} title="CoCreate">
-            <span className="brand-orbit" />
-            <strong>CoCreate</strong>
-          </button>
+          <div className="sidebar-header">
+            <button className="brand-mark" type="button" onClick={createThread} title="CoCreate">
+              <span className="brand-orbit" />
+              {!sidebarCollapsed ? <strong>CoCreate</strong> : null}
+            </button>
+            <button
+              className="sidebar-toggle"
+              type="button"
+              onClick={() => setSidebarCollapsed((value) => !value)}
+              title={sidebarCollapsed ? "Abrir barra lateral" : "Cerrar barra lateral"}
+            >
+              {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            </button>
+          </div>
 
           <nav className="primary-nav" aria-label="Navegación principal">
             {leftNav.map((item) => {
@@ -947,7 +990,7 @@ export function CoCreateExperience() {
                   title={item.label}
                 >
                   <Icon size={17} />
-                  <span>{item.label}</span>
+                  {!sidebarCollapsed ? <span>{item.label}</span> : null}
                 </button>
               );
             })}
@@ -955,11 +998,11 @@ export function CoCreateExperience() {
         </div>
 
         <div className="recent-panel">
-          <div className="rail-label">Recientes</div>
+          {!sidebarCollapsed ? <div className="rail-label">Conversaciones</div> : null}
           {searchOpen ? (
             <label className="sidebar-search">
               <Search size={15} />
-              <input placeholder="Buscar..." autoFocus />
+              {!sidebarCollapsed ? <input placeholder="Buscar..." autoFocus /> : null}
             </label>
           ) : null}
           <div className="thread-list">
@@ -969,9 +1012,15 @@ export function CoCreateExperience() {
                 className={activeThreadId === thread.id ? "thread-button active" : "thread-button"}
                 type="button"
                 onClick={() => setActiveThreadId(thread.id)}
+                title={thread.title}
               >
-                <span>{thread.title}</span>
-                <small>{thread.preview}</small>
+                <LayoutPanelLeft size={16} />
+                {!sidebarCollapsed ? (
+                  <>
+                    <span>{thread.title}</span>
+                    <small>{thread.preview}</small>
+                  </>
+                ) : null}
               </button>
             ))}
           </div>
@@ -980,12 +1029,12 @@ export function CoCreateExperience() {
         <div className="profile-zone">
           <button className="upgrade-button" type="button" onClick={() => setActiveTool("plan")}>
             <Sparkles size={15} />
-            Mejorar plan
+            {!sidebarCollapsed ? "Mejorar plan" : null}
           </button>
           <button className="profile-button" type="button" onClick={() => setProfileOpen((value) => !value)}>
             <span className="avatar">M</span>
-            <span>Martin</span>
-            <ChevronDown size={14} />
+            {!sidebarCollapsed ? <span>Martin</span> : null}
+            {!sidebarCollapsed ? <ChevronDown size={14} /> : null}
           </button>
           {profileOpen ? (
             <div className="profile-menu">
@@ -1016,8 +1065,13 @@ export function CoCreateExperience() {
 
       <section className="app-surface">
         <header className="workspace-topbar">
-          <button className="icon-button mobile-menu" type="button" title="Menú">
-            <Menu size={17} />
+          <button
+            className="icon-button mobile-menu"
+            type="button"
+            title={sidebarCollapsed ? "Abrir barra lateral" : "Cerrar barra lateral"}
+            onClick={() => setSidebarCollapsed((value) => !value)}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
           </button>
           <div className="thread-heading">
             <span>{activeMode === "chat" ? "Chat" : activeMode === "live" ? "Live Coding" : "Co-Coding"}</span>

@@ -59,6 +59,10 @@ button:disabled {
   color: var(--text);
 }
 
+.workspace-sidebar-collapsed {
+  grid-template-columns: 92px minmax(0, 1fr) 320px;
+}
+
 .workspace-light {
   --bg: #f7f7f4;
   --panel: rgba(17, 17, 17, 0.035);
@@ -89,6 +93,11 @@ button:disabled {
   grid-template-rows: auto 1fr auto;
   gap: 18px;
   border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.sidebar.collapsed {
+  padding-inline: 12px;
 }
 
 .inspector {
@@ -121,6 +130,7 @@ button:disabled {
 }
 
 .brand-mark,
+.sidebar-toggle,
 .nav-item,
 .profile-button,
 .upgrade-button,
@@ -143,12 +153,27 @@ button:disabled {
 }
 
 .brand-mark {
-  width: 100%;
+  flex: 1;
   padding: 10px 8px;
   display: flex;
   align-items: center;
   gap: 10px;
   text-align: left;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-toggle {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  background: var(--button);
+  border-color: var(--line);
 }
 
 .brand-mark strong {
@@ -183,6 +208,13 @@ button:disabled {
   color: var(--soft);
 }
 
+.sidebar.collapsed .nav-item,
+.sidebar.collapsed .upgrade-button,
+.sidebar.collapsed .profile-button,
+.sidebar.collapsed .thread-button {
+  justify-content: center;
+}
+
 .nav-item:hover,
 .nav-item.active,
 .profile-button:hover,
@@ -191,6 +223,7 @@ button:disabled {
 .profile-menu button:hover,
 .mode-button:hover,
 .icon-button:hover,
+.sidebar-toggle:hover,
 .left-tools button:hover,
 .tool-pill:hover,
 .quick-actions button:hover,
@@ -240,6 +273,10 @@ button:disabled {
   text-align: left;
 }
 
+.thread-button svg {
+  opacity: 0.82;
+}
+
 .thread-button.active {
   background: var(--panel-strong);
   border-color: var(--line);
@@ -256,6 +293,13 @@ button:disabled {
 .statusline,
 .section-head span {
   color: var(--muted);
+}
+
+.sidebar.collapsed .thread-button {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0;
 }
 
 .profile-zone {
@@ -306,7 +350,7 @@ button:disabled {
 }
 
 .mobile-menu {
-  display: none;
+  display: grid;
 }
 
 .thread-heading {
