@@ -15,6 +15,7 @@ type ChatMessage = {
 
 const defaultOpenAIModel = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
 const defaultGeminiModel = process.env.GEMINI_WEB_MODEL ?? "gemini-2.5-flash";
+const searchProvider = process.env.SEARCH_PROVIDER ?? "auto";
 
 function cleanHistory(history: ChatMessage[] = []) {
   return history
@@ -36,6 +37,48 @@ function buildOpenAIInput(history: ChatMessage[], prompt: string) {
     transcript ? `Historial reciente:\n${transcript}` : "Historial reciente: sin mensajes previos.",
     `Mensaje actual: ${prompt}`
   ].join("\n\n");
+}
+
+function shouldUseSearch(prompt: string) {
+  const normalized = prompt.trim().toLowerCase();
+
+  const signals = [
+    "actual",
+    "actualmente",
+    "hoy",
+    "ahora",
+    "reciente",
+    "recientes",
+    "ultima",
+    "ultimas",
+    "ultimo",
+    "ultimos",
+    "quien es",
+    "quién es",
+    "alcalde",
+    "presidente",
+    "gobernador",
+    "ceo",
+    "precio",
+    "cuanto vale",
+    "cuánto vale",
+    "cuanta gente",
+    "cuánta gente",
+    "poblacion",
+    "población",
+    "vive en",
+    "noticia",
+    "noticias",
+    "resultados",
+    "marcador",
+    "2026",
+    "2025",
+    "este año",
+    "esta semana",
+    "este mes"
+  ];
+
+  return signals.some((signal) => normalized.includes(signal));
 }
 
 function extractOpenAIText(payload: any) {
@@ -108,14 +151,75 @@ export default async function handler(request: ApiRequest, response: ApiResponse
   try {
     const prompt = typeof request.body?.prompt === "string" ? request.body.prompt.trim() : "";
     const history = Array.isArray(request.body?.history) ? request.body.history : [];
+    const needsSearch = shouldUseSearch(prompt);
 
     if (!prompt) {
       response.status(400).json({ error: "No hay prompt para responder." });
       return;
     }
 
+    const geminiKey = process.env.GEMINI_API_KEY?.trim();
     const openAiKey = process.env.OPENAI_API_KEY?.trim();
+    const preferGemini = searchProvider === "gemini" || (searchProvider === "auto" && needsSearch && geminiKey);
+
+    if (preferGemini && geminiKey) {
+      const aiResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": geminiKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: defaultGeminiModel,
+          input: [
+            {
+              type: "text",
+              text: [
+                "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara.",
+                "Si el tema depende de informacion reciente, usa Google Search de forma autonoma.",
+                "Si citas datos actuales, apoyalos en resultados de busqueda cuando sea necesario.",
+                "Historial reciente:",
+                ...cleanHistory(history).map((message) => `${message.role}: ${message.content}`),
+                `Mensaje actual: ${prompt}`
+              ].join("\n")
+            }
+          ],
+          tools: [{ type: "google_search" }]
+        })
+      });
+
+      const payload = await aiResponse.json().catch(() => null);
+      if (!aiResponse.ok) {
+        throw new Error(payload?.error?.message ?? "Gemini no pudo responder.");
+      }
+
+      const output = typeof payload?.output_text === "string" ? payload.output_text.trim() : "";
+      if (!output) {
+        throw new Error("Gemini no devolvio texto util.");
+      }
+
+      response.status(200).json({
+        ok: true,
+        output,
+        provider: "gemini"
+      });
+      return;
+    }
+
     if (openAiKey) {
+      const tools = [
+        {
+          type: "web_search",
+          user_location: {
+            type: "approximate",
+            country: "CO",
+            city: "Medellin",
+            region: "Antioquia"
+          },
+          external_web_access: true
+        }
+      ];
+
       const aiResponse = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: {
@@ -124,7 +228,9 @@ export default async function handler(request: ApiRequest, response: ApiResponse
         },
         body: JSON.stringify({
           model: defaultOpenAIModel,
-          input: buildOpenAIInput(history, prompt)
+          input: buildOpenAIInput(history, prompt),
+          tools,
+          tool_choice: needsSearch ? "required" : "auto"
         })
       });
 
@@ -146,41 +252,40 @@ export default async function handler(request: ApiRequest, response: ApiResponse
       return;
     }
 
-    const geminiKey = process.env.GEMINI_API_KEY?.trim();
     if (geminiKey) {
-      const aiResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${defaultGeminiModel}:generateContent?key=${geminiKey}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                role: "user",
-                parts: [
-                  {
-                    text: [
-                      "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara.",
-                      "Historial reciente:",
-                      ...cleanHistory(history).map((message) => `${message.role}: ${message.content}`),
-                      `Mensaje actual: ${prompt}`
-                    ].join("\n")
-                  }
-                ]
-              }
-            ]
-          })
-        }
-      );
+      const aiResponse = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": geminiKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: defaultGeminiModel,
+          input: [
+            {
+              type: "text",
+              text: [
+                "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara.",
+                "Usa Google Search de forma autonoma cuando la pregunta requiera actualidad o precision factual.",
+                "Historial reciente:",
+                ...cleanHistory(history).map((message) => `${message.role}: ${message.content}`),
+                `Mensaje actual: ${prompt}`
+              ].join("\n")
+            }
+          ],
+          tools: [{ type: "google_search" }]
+        })
+      });
 
       const payload = await aiResponse.json().catch(() => null);
       if (!aiResponse.ok) {
         throw new Error(payload?.error?.message ?? "Gemini no pudo responder.");
       }
 
-      const output = extractGeminiText(payload);
+      const output =
+        typeof payload?.output_text === "string" && payload.output_text.trim()
+          ? payload.output_text.trim()
+          : extractGeminiText(payload);
       if (!output) {
         throw new Error("Gemini no devolvio texto util.");
       }
