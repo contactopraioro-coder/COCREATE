@@ -1,13 +1,13 @@
 {
-  "name": "caleidoscopio-cocreate",
+  "name": "cocreate-desktop",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
-    "dev": "concurrently \"npm:dev:overlay\" \"npm:dev:electron\"",
+    "dev": "concurrently \"npm:dev:site\" \"npm:dev:electron\"",
     "dev:overlay": "vite --config vite.overlay.config.ts",
-    "dev:electron": "wait-on tcp:5174 && ELECTRON_RENDERER_URL=http://localhost:5174 electron electron/main.mjs",
+    "dev:electron": "wait-on tcp:5173 && ELECTRON_RENDERER_URL=http://localhost:5173 electron electron/main.mjs",
     "dev:site": "vite",
     "build": "npm run build:site && npm run build:overlay",
     "build:site": "vite build",
@@ -34,13 +34,14 @@
     "wait-on": "^8.0.1"
   },
   "build": {
-    "appId": "com.caleidoscopio.overlay",
-    "productName": "Caleidoscopio Overlay",
+    "appId": "com.cocreate.desktop",
+    "productName": "CoCreate",
     "directories": {
       "output": "release"
     },
     "files": [
       "electron/**/*",
+      "dist/**/*",
       "overlay-dist/**/*",
       "package.json"
     ],

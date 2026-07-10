@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: caleidoscopio-overlay
+    runtime: static
+    buildCommand: npm ci && npm run build:site
+    staticPublishPath: dist
+    pullRequestPreviewsEnabled: true
