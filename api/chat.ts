@@ -26,6 +26,18 @@ function cleanHistory(history: ChatMessage[] = []) {
     }));
 }
 
+function buildOpenAIInput(history: ChatMessage[], prompt: string) {
+  const transcript = cleanHistory(history)
+    .map((message) => `${message.role}: ${message.content}`)
+    .join("\n");
+
+  return [
+    "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara. Ayuda a construir, depurar y planear software.",
+    transcript ? `Historial reciente:\n${transcript}` : "Historial reciente: sin mensajes previos.",
+    `Mensaje actual: ${prompt}`
+  ].join("\n\n");
+}
+
 function extractOpenAIText(payload: any) {
   if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
     return payload.output_text.trim();
@@ -112,35 +124,7 @@ export default async function handler(request: ApiRequest, response: ApiResponse
         },
         body: JSON.stringify({
           model: defaultOpenAIModel,
-          input: [
-            {
-              role: "system",
-              content: [
-                {
-                  type: "input_text",
-                  text: "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara. Ayuda a construir, depurar y planear software."
-                }
-              ]
-            },
-            ...cleanHistory(history).map((message) => ({
-              role: message.role === "assistant" ? "assistant" : "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: message.content
-                }
-              ]
-            })),
-            {
-              role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: prompt
-                }
-              ]
-            }
-          ]
+          input: buildOpenAIInput(history, prompt)
         })
       });
 
