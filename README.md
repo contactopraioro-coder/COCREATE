@@ -46,6 +46,10 @@ Referencia verificada: `openai/codex` esta licenciado bajo Apache-2.0.
 ```bash
 GEMINI_MODEL=gemini-3.5-flash
 CODEX_BINARY=codex
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_TRANSCRIBE_MODEL=gpt-4o-mini-transcribe
+GEMINI_API_KEY=...
 ```
 
 ## Build
@@ -62,6 +66,12 @@ La experiencia web desplegable en hosting usa solo el renderer Vite principal.
 - Render Static Site: `npm ci && npm run build:site` con publish path `dist`
 
 La parte Electron sigue siendo local de escritorio y no se despliega como app nativa en Vercel ni Render.
+
+Para que la experiencia web responda bien en Vercel:
+
+- `OPENAI_API_KEY` habilita chat web en `/api/chat`
+- `OPENAI_TRANSCRIBE_MODEL` habilita transcripcion de voz en `/api/transcribe`
+- `GEMINI_API_KEY` sirve como alternativa para respuestas web si no usas OpenAI
 
 ## Permisos
 

@@ -290,6 +290,9 @@ export function CoCreateExperience() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
+  const audioRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<BlobPart[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const hasHydratedRef = useRef(false);
   const persistTimerRef = useRef<number | null>(null);
@@ -399,6 +402,8 @@ export function CoCreateExperience() {
   useEffect(() => {
     return () => {
       stopTracks(streamRef.current);
+      audioRecorderRef.current?.stop();
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
       recognitionRef.current?.stop();
       if (previewRef.current) previewRef.current.srcObject = null;
       if (persistTimerRef.current) {
@@ -684,17 +689,22 @@ export function CoCreateExperience() {
   };
 
   const toggleVoice = () => {
-    const Recognition = getSpeechRecognition();
-    if (!Recognition) {
-      setStatus("Dictado no disponible en este navegador.");
-      return;
-    }
-
     if (isListening) {
+      if (audioRecorderRef.current?.state === "recording") {
+        setStatus("Procesando nota de voz.");
+        audioRecorderRef.current.stop();
+        return;
+      }
       recognitionRef.current?.stop();
       setIsListening(false);
       setStatus("Dictado pausado.");
       appendEvent("voice.stopped");
+      return;
+    }
+
+    const Recognition = getSpeechRecognition();
+    if (!Recognition) {
+      void startRecordedVoiceFallback();
       return;
     }
 
@@ -712,14 +722,87 @@ export function CoCreateExperience() {
     recognition.onend = () => setIsListening(false);
     recognition.onerror = () => {
       setIsListening(false);
-      setStatus("No pude capturar la nota de voz.");
-      appendEvent("voice.error");
+      void startRecordedVoiceFallback();
     };
     recognitionRef.current = recognition;
     recognition.start();
     setIsListening(true);
     setStatus("Dictado activo.");
     appendEvent("voice.started");
+  };
+
+  const startRecordedVoiceFallback = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType =
+        MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+      const recorder = new MediaRecorder(stream, { mimeType });
+
+      audioStreamRef.current = stream;
+      audioRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        setIsListening(false);
+        stream.getTracks().forEach((track) => track.stop());
+        audioStreamRef.current = null;
+
+        try {
+          const blob = new Blob(audioChunksRef.current, { type: mimeType });
+          const arrayBuffer = await blob.arrayBuffer();
+          const audioBase64 = btoa(
+            new Uint8Array(arrayBuffer).reduce((acc, value) => acc + String.fromCharCode(value), "")
+          );
+
+          const result = await fetch("/api/transcribe", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              audioBase64,
+              mimeType,
+              language: "es"
+            })
+          }).then(async (response) => {
+            const payload = await response.json().catch(() => null);
+            if (!response.ok) {
+              throw new Error(payload?.error ?? "No pude transcribir la nota de voz.");
+            }
+            return payload;
+          });
+
+          if (typeof result.text === "string" && result.text.trim()) {
+            setPrompt((current) => `${current}${current ? " " : ""}${result.text.trim()}`);
+            setStatus("Nota de voz transcrita.");
+            appendEvent("voice.transcribed", {
+              provider: result.provider ?? "api"
+            });
+          }
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : "No pude capturar la nota de voz.";
+          setStatus(message);
+          appendMessage("assistant", message);
+          appendEvent("voice.error", { message });
+        }
+      };
+
+      recorder.start();
+      setIsListening(true);
+      setStatus("Grabando nota de voz. Pulsa otra vez para detener.");
+      appendEvent("voice.recording.started");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "No pude capturar la nota de voz.";
+      setStatus(message);
+      appendMessage("assistant", message);
+      appendEvent("voice.error", { message });
+    }
   };
 
   const sendPrompt = async () => {
@@ -748,19 +831,30 @@ export function CoCreateExperience() {
     setError("");
     window.overlayBridge?.copyText(text);
 
-    if (!window.overlayBridge?.runCodex) {
-      setStatus("Prompt enviado en modo preview. Abre Electron para ejecutar Codex.");
-      appendMessage("assistant", "Preview recibido. En Electron este botón ejecuta Codex CLI y devuelve la salida aquí.");
-      return;
-    }
-
     setIsRunningCodex(true);
-    setStatus("Codex está ejecutando el prompt.");
+    setStatus(window.overlayBridge?.runCodex ? "Codex está ejecutando el prompt." : "CoCreate Web está respondiendo.");
 
     try {
-      const result = await window.overlayBridge.runCodex({ prompt: text });
+      const result = window.overlayBridge?.runCodex
+        ? await window.overlayBridge.runCodex({ prompt: text })
+        : await fetch("/api/chat", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              prompt: text,
+              history: messages
+            })
+          }).then(async (response) => {
+            const payload = await response.json().catch(() => null);
+            if (!response.ok) {
+              throw new Error(payload?.error ?? "No pude responder desde CoCreate Web.");
+            }
+            return payload;
+          });
       appendMessage("assistant", result.output);
-      setStatus("Codex terminó la ejecución.");
+      setStatus(window.overlayBridge?.runCodex ? "Codex terminó la ejecución." : "CoCreate Web respondió.");
       appendEvent("codex.completed", {
         ok: result.ok,
         outputPreview: result.output.slice(0, 280)

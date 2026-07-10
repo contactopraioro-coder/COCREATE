@@ -11,7 +11,7 @@ import {
   Sparkles,
   SunMedium
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./cocreate-v01.css";
 
 type ThemeMode = "dark" | "light";
@@ -70,6 +70,9 @@ const recentChats = [
 ];
 
 export function CoCreateV01Experience() {
+  const audioRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<BlobPart[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [prompt, setPrompt] = useState("");
   const [activeChat, setActiveChat] = useState(recentChats[0].title);
@@ -79,10 +82,17 @@ export function CoCreateV01Experience() {
     {
       id: "welcome",
       role: "assistant",
-      body: "Listo. Escribe una tarea y CoCreate la enviará a Codex cuando estés en la app Electron."
+      body: "Listo. En web ya puedo responder por API y en desktop puedo usar Codex directamente."
     }
   ]);
   const [isRunning, setIsRunning] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      audioRecorderRef.current?.stop();
+      audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
 
   const appendMessage = (role: ChatMessage["role"], body: string) => {
     setMessages((current) => [
@@ -106,16 +116,19 @@ export function CoCreateV01Experience() {
     try {
       const result = window.overlayBridge?.runCodex
         ? await window.overlayBridge.runCodex({ prompt: text })
-        : await fetch("/api/codex/run", {
+        : await fetch("/api/chat", {
             method: "POST",
             headers: {
               "Content-Type": "application/json"
             },
-            body: JSON.stringify({ prompt: text })
+            body: JSON.stringify({
+              prompt: text,
+              history: messages
+            })
           }).then(async (response) => {
             const payload = await response.json().catch(() => null);
             if (!response.ok) {
-              throw new Error(payload?.error ?? "No pude ejecutar Codex desde el preview.");
+              throw new Error(payload?.error ?? "No pude responder desde CoCreate Web.");
             }
             return payload;
           });
@@ -132,38 +145,116 @@ export function CoCreateV01Experience() {
   };
 
   const toggleVoiceNote = () => {
-    const Recognition = getSpeechRecognition();
-    if (!Recognition) {
-      appendMessage("assistant", "El dictado de voz no está disponible en este navegador.");
-      return;
-    }
-
     if (isListening) {
+      if (audioRecorderRef.current?.state === "recording") {
+        audioRecorderRef.current.stop();
+        return;
+      }
       setIsListening(false);
       return;
     }
 
-    const recognition = new Recognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = "es-CO";
-    recognition.onresult = (event) => {
-      const transcript = Array.from(event.results)
-        .map((result) => result[0]?.transcript ?? "")
-        .join(" ")
-        .trim();
+    const Recognition = getSpeechRecognition();
+    if (Recognition) {
+      const recognition = new Recognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = "es-CO";
+      recognition.onresult = (event) => {
+        const transcript = Array.from(event.results)
+          .map((result) => result[0]?.transcript ?? "")
+          .join(" ")
+          .trim();
 
-      if (transcript) {
-        setPrompt((current) => `${current}${current ? " " : ""}${transcript}`);
-      }
-    };
-    recognition.onend = () => setIsListening(false);
-    recognition.onerror = () => {
+        if (transcript) {
+          setPrompt((current) => `${current}${current ? " " : ""}${transcript}`);
+        }
+      };
+      recognition.onend = () => setIsListening(false);
+      recognition.onerror = async () => {
+        setIsListening(false);
+        await startRecordedVoiceFallback();
+      };
+      recognition.start();
+      setIsListening(true);
+      return;
+    }
+
+    void startRecordedVoiceFallback();
+  };
+
+  const startRecordedVoiceFallback = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType =
+        MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+      const recorder = new MediaRecorder(stream, { mimeType });
+
+      audioStreamRef.current = stream;
+      audioRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        setIsListening(false);
+        stream.getTracks().forEach((track) => track.stop());
+        audioStreamRef.current = null;
+
+        try {
+          const blob = new Blob(audioChunksRef.current, { type: mimeType });
+          const arrayBuffer = await blob.arrayBuffer();
+          const audioBase64 = btoa(
+            new Uint8Array(arrayBuffer).reduce((acc, value) => acc + String.fromCharCode(value), "")
+          );
+
+          const result = await fetch("/api/transcribe", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              audioBase64,
+              mimeType,
+              language: "es"
+            })
+          }).then(async (response) => {
+            const payload = await response.json().catch(() => null);
+            if (!response.ok) {
+              throw new Error(payload?.error ?? "No pude transcribir la nota de voz.");
+            }
+            return payload;
+          });
+
+          if (typeof result.text === "string" && result.text.trim()) {
+            setPrompt((current) => `${current}${current ? " " : ""}${result.text.trim()}`);
+          }
+        } catch (cause) {
+          appendMessage(
+            "assistant",
+            cause instanceof Error
+              ? cause.message
+              : "No pude capturar la nota de voz. Revisa permisos del micrófono."
+          );
+        }
+      };
+
+      recorder.start();
+      setIsListening(true);
+      appendMessage("assistant", "Escuchando nota de voz. Pulsa el micrófono otra vez para detener y transcribir.");
+    } catch (cause) {
       setIsListening(false);
-      appendMessage("assistant", "No pude capturar la nota de voz. Revisa permisos del micrófono.");
-    };
-    recognition.start();
-    setIsListening(true);
+      appendMessage(
+        "assistant",
+        cause instanceof Error
+          ? cause.message
+          : "No pude capturar la nota de voz. Revisa permisos del micrófono."
+      );
+    }
   };
 
   return (
