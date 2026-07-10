@@ -1,27 +1,24 @@
-export type Role = "owner" | "builder" | "reviewer" | "guest";
-
-export interface Branch {
-  id: string;
-  name: string;
-  description: string;
-  status: "Planning" | "Building" | "Review" | "Shipped";
-  allowedRoles: Role[];
+export interface AppConfig {
+  outputDir: string;
+  defaultGeminiModel: string;
 }
 
-export interface MemberCard {
-  id: string;
-  name: string;
-  role: Role;
-  color: string;
-  online: boolean;
-  branchId: string;
-  currentTask: string;
-  lastAction: string;
+export interface SaveRecordingResult {
+  filePath: string;
+  fileSize: number;
 }
 
-export interface OverlayState {
-  attached: boolean;
-  appName: string;
-  boundsLabel: string;
-  message: string;
+export interface AnalysisResult {
+  model: string;
+  fileUri: string;
+  fileName: string;
+  output: string;
 }
+
+export type RecorderPhase =
+  | "idle"
+  | "requesting"
+  | "recording"
+  | "stopping"
+  | "ready"
+  | "analyzing";

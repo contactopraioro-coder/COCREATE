@@ -1,45 +1,47 @@
-# Caleidoscopio Overlay
+# Caleidoscopio Recorder
 
-Este repo contiene dos cosas:
+Desktop app en Electron + Vite para:
 
-- la app de Electron para el overlay pegado a Codex
-- la landing blanca de descarga para desplegar en Vercel
+- capturar pantalla en macOS
+- guardar la grabacion localmente
+- subir el video a Gemini
+- devolver prompts listos para pegar en Codex
 
-## Desarrollo del overlay
+## Desarrollo
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Landing local
+La interfaz del desktop app vive en `overlay-src/` y el proceso principal de Electron en `electron/`.
+
+## Uso
+
+1. Arranca la app con `npm run dev`.
+2. Pulsa `Iniciar captura` y elige una pantalla o ventana.
+3. Pulsa `Detener`.
+4. Pega tu API key de Google AI Studio.
+5. Pulsa `Crear prompts`.
+
+La app guarda los videos en `~/Movies/Caleidoscopio`.
+
+## Configuracion
+
+Puedes definir un modelo por defecto en `.env`:
 
 ```bash
-npm run dev:site
+GEMINI_MODEL=gemini-3.5-flash
 ```
 
-## Builds
+## Build
 
 ```bash
 npm run build
 ```
 
-## Instalador macOS
-
-```bash
-npm run dist:mac
-```
-
-Esto genera `.dmg` y `.zip` en `release/`.
-
 ## Permisos de macOS
 
-La app usa `Accessibility` para leer la geometria de la ventana de Codex.
+Para capturar pantalla, macOS puede pedir permisos en:
 
-Activalo en:
-
-`System Settings -> Privacy & Security -> Accessibility`
-
-## Variables
-
-Configura nombre de app objetivo y offsets en [.env.example](/Users/lahighway/Documents/CALEIDOSCOPIO/.env.example).
+`System Settings -> Privacy & Security -> Screen Recording`

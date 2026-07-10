@@ -1,252 +1,38 @@
 import "dotenv/config";
-import { app, BrowserWindow, ipcMain, screen } from "electron";
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { app, BrowserWindow, clipboard, ipcMain } from "electron";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import readline from "node:readline";
 
-const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+const defaultGeminiModel = process.env.GEMINI_MODEL ?? "gemini-3.5-flash";
 
-const targetAppName = process.env.TARGET_APP_NAME ?? "Codex";
-const sidebarWidth = Number(process.env.SIDEBAR_WIDTH ?? 392);
-const sidebarRightMargin = Number(process.env.SIDEBAR_RIGHT_MARGIN ?? 14);
-const sidebarTopMargin = Number(process.env.SIDEBAR_TOP_MARGIN ?? 52);
-const sidebarBottomMargin = Number(process.env.SIDEBAR_BOTTOM_MARGIN ?? 18);
-const sidebarPollMs = Number(process.env.SIDEBAR_POLL_MS ?? 120);
-const collapsedWidth = 132;
+let mainWindow = null;
 
-let overlayWindow = null;
-let syncTimer = null;
-let lastVisibilityState = "detached";
-let lastOverlaySignature = "";
-let isCollapsed = false;
-let targetWindowState = null;
-let trackerProcess = null;
-
-function fallbackBounds() {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const currentWidth = isCollapsed ? collapsedWidth : sidebarWidth;
-  return {
-    x: Math.round(primaryDisplay.workArea.x + primaryDisplay.workArea.width - currentWidth - 40),
-    y: Math.round(primaryDisplay.workArea.y + 100),
-    width: currentWidth,
-    height: 760
-  };
+function getAppVideoDir() {
+  return path.join(app.getPath("movies"), "Caleidoscopio");
 }
 
-function emitOverlayState(payload) {
-  if (!overlayWindow || overlayWindow.isDestroyed()) {
-    return;
-  }
-
-  overlayWindow.webContents.send("overlay:state", payload);
+function sanitizeFileName(value) {
+  return value.replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase();
 }
 
-async function readTargetWindowBounds() {
-  const script = `
-    tell application "System Events"
-      if not (exists process "${targetAppName}") then
-        return "APP_MISSING"
-      end if
-
-      tell process "${targetAppName}"
-        if (count of windows) is 0 then
-          return "WINDOW_MISSING"
-        end if
-
-        set frontWindow to window 1
-        set isFrontmost to frontmost
-        set {xPos, yPos} to position of frontWindow
-        set {winWidth, winHeight} to size of frontWindow
-        set isMinimized to value of attribute "AXMinimized" of attribute "AXMainWindow" of application process "${targetAppName}"
-        return (xPos as text) & "," & (yPos as text) & "," & (winWidth as text) & "," & (winHeight as text) & "," & (isFrontmost as text) & "," & (isMinimized as text)
-      end tell
-    end tell
-  `;
-
-  const { stdout } = await execFileAsync("osascript", ["-e", script]);
-  const output = stdout.trim();
-
-  if (output === "APP_MISSING" || output === "WINDOW_MISSING") {
-    return null;
-  }
-
-  const [rawX, rawY, rawWidth, rawHeight, rawFrontmost, rawMinimized] = output
-    .split(",")
-    .map((value) => value.trim());
-  const [x, y, width, height] = [rawX, rawY, rawWidth, rawHeight].map((value) =>
-    Number(value)
-  );
-  if ([x, y, width, height].some((value) => Number.isNaN(value))) {
-    return null;
-  }
-
-  return {
-    x,
-    y,
-    width,
-    height,
-    isFrontmost: rawFrontmost === "true",
-    isMinimized: rawMinimized === "true"
-  };
+function buildRecordingName() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `caleidoscopio-${stamp}.webm`;
 }
 
-function startNativeTracker() {
-  const trackerPath = path.join(__dirname, "window_tracker.swift");
-  trackerProcess = spawn("swift", [trackerPath, targetAppName], {
-    cwd: rootDir,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-
-  const lines = readline.createInterface({ input: trackerProcess.stdout });
-  lines.on("line", (line) => {
-    try {
-      const payload = JSON.parse(line);
-      targetWindowState = payload;
-    } catch {
-      targetWindowState = null;
-    }
-  });
-
-  trackerProcess.stderr.on("data", () => {
-    // Keep the app running even if the tracker logs warnings.
-  });
-
-  trackerProcess.on("exit", () => {
-    trackerProcess = null;
-    targetWindowState = null;
-  });
-}
-
-function currentTrackedBounds() {
-  if (!targetWindowState?.found) {
-    return null;
-  }
-
-  return {
-    x: targetWindowState.x,
-    y: targetWindowState.y,
-    width: targetWindowState.width,
-    height: targetWindowState.height,
-    isFrontmost: targetWindowState.isFrontmost,
-    isMinimized: targetWindowState.isMinimized
-  };
-}
-
-function computeOverlayBounds(targetBounds) {
-  const display = screen.getDisplayNearestPoint({
-    x: targetBounds.x,
-    y: targetBounds.y
-  });
-  const visibleArea = display.workArea;
-
-  const width = isCollapsed ? collapsedWidth : sidebarWidth;
-  const height = Math.max(360, targetBounds.height - sidebarTopMargin - sidebarBottomMargin);
-  const x = Math.round(targetBounds.x + targetBounds.width - width - sidebarRightMargin);
-  const y = Math.round(targetBounds.y + sidebarTopMargin);
-
-  return {
-    x: Math.max(visibleArea.x, x),
-    y: Math.max(visibleArea.y, y),
-    width,
-    height
-  };
-}
-
-async function syncOverlayToTarget() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) {
-    return;
-  }
-
-  try {
-    const targetBounds = currentTrackedBounds() ?? (await readTargetWindowBounds());
-    if (!targetBounds) {
-      overlayWindow.hide();
-      lastOverlaySignature = "";
-      if (lastVisibilityState !== "detached") {
-        emitOverlayState({
-          attached: false,
-          appName: targetAppName,
-          boundsLabel: "sin ventana",
-          message:
-            "No encuentro una ventana activa de Codex. Abrela y da permiso de Accessibility a Electron."
-        });
-        lastVisibilityState = "detached";
-      }
-      return;
-    }
-
-    const overlayOwnsFocus = overlayWindow.isFocused();
-    if (targetBounds.isMinimized || (!targetBounds.isFrontmost && !overlayOwnsFocus)) {
-      overlayWindow.hide();
-      lastOverlaySignature = "";
-      if (lastVisibilityState !== "detached") {
-        emitOverlayState({
-          attached: false,
-          appName: targetAppName,
-          boundsLabel: `${targetBounds.x}, ${targetBounds.y} · ${targetBounds.width}x${targetBounds.height}`,
-          message: `Overlay en pausa mientras ${targetAppName} no este al frente.`
-        });
-        lastVisibilityState = "detached";
-      }
-      return;
-    }
-
-    const nextBounds = computeOverlayBounds(targetBounds);
-    const nextSignature = `${nextBounds.x}:${nextBounds.y}:${nextBounds.width}:${nextBounds.height}`;
-    if (nextSignature !== lastOverlaySignature) {
-      overlayWindow.setBounds(nextBounds, false);
-      lastOverlaySignature = nextSignature;
-    }
-    if (!overlayWindow.isVisible()) {
-      overlayWindow.showInactive();
-    }
-    overlayWindow.moveTop();
-    overlayWindow.setAlwaysOnTop(true, "screen-saver");
-    emitOverlayState({
-      attached: true,
-      appName: targetAppName,
-      boundsLabel: `${targetBounds.x}, ${targetBounds.y} · ${targetBounds.width}x${targetBounds.height}`,
-      message: "Overlay ligado a la ventana de Codex."
-    });
-    lastVisibilityState = "attached";
-  } catch {
-    overlayWindow.setBounds(fallbackBounds(), false);
-    overlayWindow.showInactive();
-    lastOverlaySignature = "";
-    emitOverlayState({
-      attached: false,
-      appName: targetAppName,
-      boundsLabel: "permiso pendiente",
-      message:
-        "No pude leer la posicion de Codex. En macOS activa Accessibility para esta app en Privacy & Security."
-    });
-    lastVisibilityState = "detached";
-  }
-}
-
-async function createOverlayWindow() {
-  overlayWindow = new BrowserWindow({
-    width: sidebarWidth,
-    height: 760,
-    x: 80,
-    y: 80,
-    frame: false,
-    transparent: true,
-    hasShadow: false,
-    resizable: false,
-    movable: false,
-    focusable: true,
-    fullscreenable: false,
-    alwaysOnTop: true,
-    skipTaskbar: false,
-    roundedCorners: false,
-    visualEffectState: "active",
-    backgroundColor: "#00000000",
+async function createMainWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 960,
+    minWidth: 1180,
+    minHeight: 760,
+    title: "Caleidoscopio Recorder",
+    backgroundColor: "#f2efe8",
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.mjs"),
       contextIsolation: true,
@@ -254,41 +40,276 @@ async function createOverlayWindow() {
     }
   });
 
-  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  overlayWindow.setAlwaysOnTop(true, "screen-saver");
-  overlayWindow.setFullScreenable(false);
-  overlayWindow.setFocusable(true);
-
   if (rendererUrl) {
-    await overlayWindow.loadURL(rendererUrl);
+    await mainWindow.loadURL(rendererUrl);
   } else {
-    await overlayWindow.loadFile(path.join(rootDir, "overlay-dist", "overlay.html"));
+    await mainWindow.loadFile(path.join(rootDir, "overlay-dist", "overlay.html"));
   }
-
-  startNativeTracker();
-  await syncOverlayToTarget();
-  syncTimer = setInterval(syncOverlayToTarget, sidebarPollMs);
 }
 
-ipcMain.handle("overlay:collapse", async () => {
-  isCollapsed = !isCollapsed;
-  lastOverlaySignature = "";
-  await syncOverlayToTarget();
-  return { collapsed: isCollapsed };
+function assertOk(response, payload) {
+  if (response.ok) {
+    return;
+  }
+
+  const detail =
+    payload && typeof payload === "object"
+      ? JSON.stringify(payload)
+      : typeof payload === "string"
+        ? payload
+        : response.statusText;
+
+  throw new Error(`Gemini API ${response.status}: ${detail}`);
+}
+
+async function startResumableUpload({ apiKey, mimeType, fileSize, displayName }) {
+  const response = await fetch("https://generativelanguage.googleapis.com/upload/v1beta/files", {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": apiKey,
+      "X-Goog-Upload-Protocol": "resumable",
+      "X-Goog-Upload-Command": "start",
+      "X-Goog-Upload-Header-Content-Length": String(fileSize),
+      "X-Goog-Upload-Header-Content-Type": mimeType,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      file: {
+        display_name: displayName
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const payload = await response.text();
+    assertOk(response, payload);
+  }
+
+  const uploadUrl = response.headers.get("x-goog-upload-url");
+  if (!uploadUrl) {
+    throw new Error("No pude obtener la URL de subida resumable de Gemini.");
+  }
+
+  return uploadUrl;
+}
+
+async function uploadFileBytes({ uploadUrl, buffer }) {
+  const response = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Length": String(buffer.byteLength),
+      "X-Goog-Upload-Offset": "0",
+      "X-Goog-Upload-Command": "upload, finalize"
+    },
+    body: buffer
+  });
+
+  const payload = await response.json().catch(() => null);
+  assertOk(response, payload);
+
+  if (!payload?.file?.uri || !payload?.file?.name) {
+    throw new Error("Gemini no devolvio la referencia del archivo subido.");
+  }
+
+  return payload.file;
+}
+
+async function waitForFileActive({ apiKey, fileName }) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}`, {
+      headers: {
+        "x-goog-api-key": apiKey
+      }
+    });
+
+    const payload = await response.json().catch(() => null);
+    assertOk(response, payload);
+
+    const state = typeof payload?.state === "string" ? payload.state : payload?.state?.name;
+
+    if (state === "ACTIVE") {
+      return payload;
+    }
+
+    if (state === "FAILED") {
+      throw new Error("Gemini marco el video como FAILED durante el procesamiento.");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+
+  throw new Error("Gemini no termino de procesar el video dentro del tiempo esperado.");
+}
+
+function extractInteractionText(payload) {
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text.trim();
+  }
+
+  const fragments = [];
+  for (const step of payload?.steps ?? []) {
+    for (const part of step?.content ?? []) {
+      if (part?.type === "text" && typeof part.text === "string") {
+        fragments.push(part.text.trim());
+      }
+    }
+  }
+
+  return fragments.filter(Boolean).join("\n\n").trim();
+}
+
+function buildAnalysisPrompt(userNotes) {
+  const noteBlock = userNotes?.trim()
+    ? `Contexto extra del usuario:\n${userNotes.trim()}`
+    : "Contexto extra del usuario:\nNo se proporciono contexto adicional.";
+
+  return [
+    "Analiza esta grabacion de pantalla como si fueras un operador senior que prepara instrucciones para OpenAI Codex.",
+    "Tu objetivo es convertir lo observado en prompts listos para pegar en Codex y ejecutar trabajo tecnico.",
+    "Responde en espanol.",
+    "Si faltan detalles, haz suposiciones prudentes y decláralas.",
+    "Usa exactamente esta estructura Markdown:",
+    "# Resumen",
+    "# Lo que parece querer el usuario",
+    "# Prompt principal para Codex",
+    "```text",
+    "PROMPT AQUI",
+    "```",
+    "# Prompt de seguimiento",
+    "```text",
+    "PROMPT AQUI",
+    "```",
+    "# Checklist de ejecucion",
+    "- item",
+    "# Riesgos o vacios",
+    "- item",
+    noteBlock
+  ].join("\n\n");
+}
+
+async function createInteraction({ apiKey, model, fileUri, mimeType, userNotes }) {
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": apiKey,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          type: "video",
+          uri: fileUri,
+          mime_type: mimeType
+        },
+        {
+          type: "text",
+          text: buildAnalysisPrompt(userNotes)
+        }
+      ]
+    })
+  });
+
+  const payload = await response.json().catch(() => null);
+  assertOk(response, payload);
+
+  const text = extractInteractionText(payload);
+  if (!text) {
+    throw new Error("Gemini respondio, pero no devolvio texto util para convertir en prompts.");
+  }
+
+  return text;
+}
+
+ipcMain.handle("app:get-config", async () => {
+  const outputDir = getAppVideoDir();
+  await mkdir(outputDir, { recursive: true });
+
+  return {
+    outputDir,
+    defaultGeminiModel
+  };
 });
 
-ipcMain.handle("overlay:close", () => {
+ipcMain.handle("recording:save", async (_event, payload) => {
+  const outputDir = getAppVideoDir();
+  await mkdir(outputDir, { recursive: true });
+
+  const preferredName = payload?.suggestedName ? sanitizeFileName(payload.suggestedName) : "";
+  const extension =
+    payload?.mimeType === "video/mp4" ? "mp4" : payload?.mimeType?.includes("webm") ? "webm" : "bin";
+  const fileName = preferredName
+    ? `${preferredName}.${extension}`
+    : buildRecordingName();
+  const filePath = path.join(outputDir, fileName);
+
+  const buffer = Buffer.from(payload.buffer);
+  await writeFile(filePath, buffer);
+
+  return {
+    filePath,
+    fileSize: buffer.byteLength
+  };
+});
+
+ipcMain.handle("analysis:run", async (_event, payload) => {
+  const apiKey = payload?.apiKey?.trim();
+  if (!apiKey) {
+    throw new Error("Falta la API key de Gemini.");
+  }
+
+  const filePath = payload?.filePath;
+  const mimeType = payload?.mimeType ?? "video/webm";
+  const model = payload?.model?.trim() || defaultGeminiModel;
+
+  if (!filePath) {
+    throw new Error("No hay video guardado para analizar.");
+  }
+
+  const fileBuffer = await readFile(filePath);
+  const displayName = path.basename(filePath);
+  const uploadUrl = await startResumableUpload({
+    apiKey,
+    mimeType,
+    fileSize: fileBuffer.byteLength,
+    displayName
+  });
+  const file = await uploadFileBytes({
+    uploadUrl,
+    buffer: fileBuffer
+  });
+  await waitForFileActive({
+    apiKey,
+    fileName: file.name
+  });
+
+  const output = await createInteraction({
+    apiKey,
+    model,
+    fileUri: file.uri,
+    mimeType,
+    userNotes: payload?.notes ?? ""
+  });
+
+  return {
+    model,
+    fileUri: file.uri,
+    fileName: file.name,
+    output
+  };
+});
+
+ipcMain.handle("clipboard:write-text", async (_event, value) => {
+  clipboard.writeText(typeof value === "string" ? value : "");
+  return { ok: true };
+});
+
+ipcMain.handle("app:close", () => {
   app.quit();
 });
 
-app.whenReady().then(createOverlayWindow);
+app.whenReady().then(createMainWindow);
 
 app.on("window-all-closed", () => {
-  if (syncTimer) {
-    clearInterval(syncTimer);
-  }
-  if (trackerProcess) {
-    trackerProcess.kill();
-  }
   app.quit();
 });

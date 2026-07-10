@@ -1,15 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("overlayBridge", {
-  onState(callback) {
-    const listener = (_event, payload) => callback(payload);
-    ipcRenderer.on("overlay:state", listener);
-    return () => ipcRenderer.removeListener("overlay:state", listener);
+  getConfig() {
+    return ipcRenderer.invoke("app:get-config");
   },
-  toggleCollapse() {
-    return ipcRenderer.invoke("overlay:collapse");
+  saveRecording(payload) {
+    return ipcRenderer.invoke("recording:save", payload);
+  },
+  analyzeRecording(payload) {
+    return ipcRenderer.invoke("analysis:run", payload);
+  },
+  copyText(value) {
+    return ipcRenderer.invoke("clipboard:write-text", value);
   },
   closeApp() {
-    return ipcRenderer.invoke("overlay:close");
+    return ipcRenderer.invoke("app:close");
   }
 });

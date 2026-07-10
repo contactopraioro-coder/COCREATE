@@ -3,10 +3,20 @@
 declare global {
   interface Window {
     overlayBridge?: {
-      onState: (
-        callback: (payload: import("./types").OverlayState) => void
-      ) => () => void;
-      toggleCollapse: () => Promise<{ collapsed: boolean }>;
+      getConfig: () => Promise<import("./types").AppConfig>;
+      saveRecording: (payload: {
+        buffer: Uint8Array;
+        mimeType: string;
+        suggestedName?: string;
+      }) => Promise<import("./types").SaveRecordingResult>;
+      analyzeRecording: (payload: {
+        apiKey: string;
+        model: string;
+        notes: string;
+        filePath: string;
+        mimeType: string;
+      }) => Promise<import("./types").AnalysisResult>;
+      copyText: (value: string) => Promise<{ ok: boolean }>;
       closeApp: () => Promise<void>;
     };
   }
