@@ -40,6 +40,38 @@ function cleanHistory(history: ChatMessage[] = []) {
     }));
 }
 
+function buildOpenAIInput(history: ChatMessage[], prompt: string) {
+  const transcript = cleanHistory(history)
+    .map((message) => `${message.role}: ${message.content}`)
+    .join("\n");
+
+  return [
+    "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara. Ayuda a construir, depurar y planear software.",
+    transcript ? `Historial reciente:\n${transcript}` : "Historial reciente: sin mensajes previos.",
+    `Mensaje actual: ${prompt}`
+  ].join("\n\n");
+}
+
+function shouldUseSearch(prompt: string) {
+  const normalized = prompt.trim().toLowerCase();
+  return [
+    "actual",
+    "actualmente",
+    "hoy",
+    "ahora",
+    "quien es",
+    "quién es",
+    "alcalde",
+    "presidente",
+    "precio",
+    "poblacion",
+    "población",
+    "noticias",
+    "2025",
+    "2026"
+  ].some((signal) => normalized.includes(signal));
+}
+
 function extractOpenAIText(payload: any) {
   if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
     return payload.output_text.trim();
@@ -110,6 +142,7 @@ export async function generateAssistantReply({ prompt, history = [] }: ChatReque
 
   const openAiKey = process.env.OPENAI_API_KEY?.trim();
   if (openAiKey) {
+    const needsSearch = shouldUseSearch(text);
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -118,35 +151,20 @@ export async function generateAssistantReply({ prompt, history = [] }: ChatReque
       },
       body: JSON.stringify({
         model: defaultOpenAIModel,
-        input: [
+        input: buildOpenAIInput(history, text),
+        tools: [
           {
-            role: "system",
-            content: [
-              {
-                type: "input_text",
-                text: "Eres CoCreate Web. Responde en espanol, de forma breve, util y clara. Ayuda a construir, depurar y planear software."
-              }
-            ]
-          },
-          ...cleanHistory(history).map((message) => ({
-            role: message.role === "assistant" ? "assistant" : "user",
-            content: [
-              {
-                type: "input_text",
-                text: message.content
-              }
-            ]
-          })),
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text
-              }
-            ]
+            type: "web_search",
+            user_location: {
+              type: "approximate",
+              country: "CO",
+              city: "Medellin",
+              region: "Antioquia"
+            },
+            external_web_access: true
           }
-        ]
+        ],
+        tool_choice: needsSearch ? "required" : "auto"
       })
     });
 

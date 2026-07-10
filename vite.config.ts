@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { generateAssistantReply, transcribeAudio } from "./api/_lib/assistant";
 
+const devStateStore = new Map<string, { snapshot: unknown; memorySummary: string }>();
+
 function readJsonBody(request: import("node:http").IncomingMessage) {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
     let body = "";
@@ -153,6 +155,70 @@ export default defineConfig({
             response.end(
               JSON.stringify({
                 error: cause instanceof Error ? cause.message : "No pude responder desde CoCreate Web."
+              })
+            );
+          }
+        });
+
+        server.middlewares.use("/api/state", async (request, response) => {
+          if (request.method === "GET") {
+            const requestUrl = new URL(request.url ?? "/", "http://localhost");
+            const clientId = requestUrl.searchParams.get("clientId")?.trim();
+            const app = requestUrl.searchParams.get("app")?.trim() || "v01";
+
+            if (!clientId) {
+              response.statusCode = 400;
+              response.setHeader("Content-Type", "application/json");
+              response.end(JSON.stringify({ error: "Falta clientId para cargar el estado." }));
+              return;
+            }
+
+            const entry = devStateStore.get(`${app}:${clientId}`) ?? null;
+            response.setHeader("Content-Type", "application/json");
+            response.end(
+              JSON.stringify({
+                ok: true,
+                enabled: true,
+                snapshot: entry?.snapshot ?? null,
+                memorySummary: entry?.memorySummary ?? ""
+              })
+            );
+            return;
+          }
+
+          if (request.method !== "POST") {
+            response.statusCode = 405;
+            response.setHeader("Content-Type", "application/json");
+            response.end(JSON.stringify({ error: "Method not allowed" }));
+            return;
+          }
+
+          try {
+            const payload = await readJsonBody(request);
+            const clientId = typeof payload.clientId === "string" ? payload.clientId.trim() : "";
+            const app = typeof payload.app === "string" ? payload.app.trim() : "v01";
+            const snapshot = payload.snapshot ?? null;
+
+            if (!clientId || !snapshot || typeof snapshot !== "object") {
+              response.statusCode = 400;
+              response.setHeader("Content-Type", "application/json");
+              response.end(JSON.stringify({ error: "Payload invalido para persistir estado." }));
+              return;
+            }
+
+            devStateStore.set(`${app}:${clientId}`, {
+              snapshot,
+              memorySummary: ""
+            });
+
+            response.setHeader("Content-Type", "application/json");
+            response.end(JSON.stringify({ ok: true, enabled: true }));
+          } catch (cause) {
+            response.statusCode = 500;
+            response.setHeader("Content-Type", "application/json");
+            response.end(
+              JSON.stringify({
+                error: cause instanceof Error ? cause.message : "No pude persistir la sesión web."
               })
             );
           }

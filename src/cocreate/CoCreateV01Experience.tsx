@@ -13,12 +13,27 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import "./cocreate-v01.css";
+import { getWebClientId, loadWebState, saveWebState } from "./web-persistence";
 
 type ThemeMode = "dark" | "light";
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   body: string;
+};
+type ChatThread = {
+  id: string;
+  title: string;
+  preview: string;
+};
+type ThreadMessages = Record<string, ChatMessage[]>;
+type V01Snapshot = {
+  theme: ThemeMode;
+  prompt: string;
+  activeChatId: string;
+  isChatsCollapsed: boolean;
+  threads: ChatThread[];
+  messagesByThread: ThreadMessages;
 };
 
 type SpeechRecognitionConstructor = new () => SpeechRecognition;
@@ -50,59 +65,222 @@ const getSpeechRecognition = () => {
   return windowWithSpeech.SpeechRecognition ?? windowWithSpeech.webkitSpeechRecognition;
 };
 
-const recentChats = [
+const recentChats: ChatThread[] = [
   {
+    id: "v01-main",
     title: "CoCreate v0.1",
     preview: "Superficie limpia para codear"
   },
   {
+    id: "v01-live",
     title: "Live Coding concept",
     preview: "Captura de pantalla a prompt"
   },
   {
+    id: "v01-ui",
     title: "UI shell",
     preview: "Tema oscuro y claro"
   },
   {
+    id: "v01-codex",
     title: "Codex bridge",
     preview: "Conectar CLI y ejecución"
   }
 ];
 
+const welcomeMessage: ChatMessage = {
+  id: "welcome",
+  role: "assistant",
+  body: "Listo. En web ya puedo responder por API y en desktop puedo usar Codex directamente."
+};
+
+const createMessageId = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+
+function createInitialMessagesByThread() {
+  return recentChats.reduce<ThreadMessages>((accumulator, chat, index) => {
+    accumulator[chat.id] = index === 0 ? [welcomeMessage] : [];
+    return accumulator;
+  }, {});
+}
+
+function isChatMessage(value: unknown): value is ChatMessage {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as ChatMessage).id === "string" &&
+      typeof (value as ChatMessage).role === "string" &&
+      typeof (value as ChatMessage).body === "string"
+  );
+}
+
+function readV01Snapshot(value: unknown): V01Snapshot | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<V01Snapshot>;
+  const threads = Array.isArray(candidate.threads)
+    ? candidate.threads.filter(
+        (thread): thread is ChatThread =>
+          Boolean(
+            thread &&
+              typeof thread === "object" &&
+              typeof (thread as ChatThread).id === "string" &&
+              typeof (thread as ChatThread).title === "string" &&
+              typeof (thread as ChatThread).preview === "string"
+          )
+      )
+    : recentChats;
+
+  const fallbackMessages = createInitialMessagesByThread();
+  const messagesByThread =
+    candidate.messagesByThread && typeof candidate.messagesByThread === "object"
+      ? Object.entries(candidate.messagesByThread).reduce<ThreadMessages>((accumulator, [threadId, messages]) => {
+          accumulator[threadId] = Array.isArray(messages) ? messages.filter(isChatMessage) : [];
+          return accumulator;
+        }, fallbackMessages)
+      : fallbackMessages;
+
+  if (!messagesByThread[threads[0]?.id]) {
+    messagesByThread[threads[0]?.id] = [welcomeMessage];
+  }
+
+  return {
+    theme: candidate.theme === "light" ? "light" : "dark",
+    prompt: typeof candidate.prompt === "string" ? candidate.prompt : "",
+    activeChatId:
+      typeof candidate.activeChatId === "string" && candidate.activeChatId ? candidate.activeChatId : threads[0].id,
+    isChatsCollapsed: typeof candidate.isChatsCollapsed === "boolean" ? candidate.isChatsCollapsed : false,
+    threads: threads.length ? threads : recentChats,
+    messagesByThread
+  };
+}
+
 export function CoCreateV01Experience() {
   const audioRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
   const audioStreamRef = useRef<MediaStream | null>(null);
+  const persistTimerRef = useRef<number | null>(null);
+  const hasHydratedRef = useRef(false);
+  const clientIdRef = useRef("");
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [prompt, setPrompt] = useState("");
-  const [activeChat, setActiveChat] = useState(recentChats[0].title);
+  const [threads, setThreads] = useState<ChatThread[]>(recentChats);
+  const [activeChatId, setActiveChatId] = useState(recentChats[0].id);
   const [isChatsCollapsed, setIsChatsCollapsed] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "welcome",
-      role: "assistant",
-      body: "Listo. En web ya puedo responder por API y en desktop puedo usar Codex directamente."
-    }
-  ]);
+  const [messagesByThread, setMessagesByThread] = useState<ThreadMessages>(createInitialMessagesByThread);
   const [isRunning, setIsRunning] = useState(false);
+  const activeMessages = messagesByThread[activeChatId] ?? [];
+
+  useEffect(() => {
+    clientIdRef.current = getWebClientId();
+
+    let cancelled = false;
+    void loadWebState<V01Snapshot>("v01", clientIdRef.current)
+      .then((payload) => {
+        if (cancelled || !payload.snapshot) {
+          return;
+        }
+
+        const snapshot = readV01Snapshot(payload.snapshot);
+        if (!snapshot) {
+          return;
+        }
+
+        setTheme(snapshot.theme);
+        setPrompt(snapshot.prompt);
+        setThreads(snapshot.threads);
+        setActiveChatId(snapshot.activeChatId);
+        setIsChatsCollapsed(snapshot.isChatsCollapsed);
+        setMessagesByThread(snapshot.messagesByThread);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) {
+          hasHydratedRef.current = true;
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
       audioRecorderRef.current?.stop();
       audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+      if (persistTimerRef.current) {
+        window.clearTimeout(persistTimerRef.current);
+      }
     };
   }, []);
 
   const appendMessage = (role: ChatMessage["role"], body: string) => {
-    setMessages((current) => [
+    setMessagesByThread((current) => ({
       ...current,
-      {
-        id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
-        role,
-        body
+      [activeChatId]: [
+        ...(current[activeChatId] ?? []),
+        {
+          id: createMessageId(),
+          role,
+          body
+        }
+      ]
+    }));
+  };
+
+  useEffect(() => {
+    if (!hasHydratedRef.current || !clientIdRef.current) {
+      return;
+    }
+
+    if (persistTimerRef.current) {
+      window.clearTimeout(persistTimerRef.current);
+    }
+
+    const snapshot: V01Snapshot = {
+      theme,
+      prompt,
+      activeChatId,
+      isChatsCollapsed,
+      threads,
+      messagesByThread
+    };
+
+    persistTimerRef.current = window.setTimeout(() => {
+      void saveWebState("v01", clientIdRef.current, snapshot).catch(() => {});
+    }, 300);
+
+    return () => {
+      if (persistTimerRef.current) {
+        window.clearTimeout(persistTimerRef.current);
       }
-    ]);
+    };
+  }, [activeChatId, isChatsCollapsed, messagesByThread, prompt, theme, threads]);
+
+  const createChat = () => {
+    const nextId = createMessageId();
+    const nextThread: ChatThread = {
+      id: nextId,
+      title: "Nuevo chat",
+      preview: "Sin mensajes todavía"
+    };
+
+    setThreads((current) => [nextThread, ...current]);
+    setMessagesByThread((current) => ({
+      ...current,
+      [nextId]: [
+        {
+          id: createMessageId(),
+          role: "assistant",
+          body: "Nuevo chat creado. Cuéntame qué quieres construir o depurar."
+        }
+      ]
+    }));
+    setActiveChatId(nextId);
+    setPrompt("");
   };
 
   const sendPrompt = async () => {
@@ -111,6 +289,17 @@ export function CoCreateV01Experience() {
 
     setPrompt("");
     appendMessage("user", text);
+    setThreads((current) =>
+      current.map((thread) =>
+        thread.id === activeChatId
+          ? {
+              ...thread,
+              title: thread.title === "Nuevo chat" ? text.slice(0, 36) : thread.title,
+              preview: text.slice(0, 72)
+            }
+          : thread
+      )
+    );
 
     setIsRunning(true);
     try {
@@ -123,7 +312,8 @@ export function CoCreateV01Experience() {
             },
             body: JSON.stringify({
               prompt: text,
-              history: messages
+              history: activeMessages,
+              clientId: clientIdRef.current
             })
           }).then(async (response) => {
             const payload = await response.json().catch(() => null);
@@ -259,53 +449,51 @@ export function CoCreateV01Experience() {
 
   return (
     <main className={`v01-page v01-${theme}`}>
-      {!isChatsCollapsed ? <aside className="floating-chat-card" aria-label="Chats recientes">
-        <div className="chat-card-head">
-          <div className="mini-brand">
-            <span />
-            <strong>CoCreate</strong>
-          </div>
-          <button
-            type="button"
-            title="Ocultar chats"
-            onClick={() => setIsChatsCollapsed(true)}
-          >
-            <PanelLeftClose size={15} />
-          </button>
-        </div>
-
-        <button className="new-chat-button" type="button" title="Nuevo chat">
-          <Plus size={15} />
-          <span>Nuevo chat</span>
-        </button>
-
-        <label className="chat-search">
-          <Search size={15} />
-          <input placeholder="Buscar chats" />
-        </label>
-
-        <div className="chat-list">
-          {recentChats.map((chat) => (
-            <button
-              key={chat.title}
-              className={activeChat === chat.title ? "chat-row active" : "chat-row"}
-              type="button"
-              onClick={() => setActiveChat(chat.title)}
-            >
-              <Code2 size={15} />
-              <span>
-                <strong>{chat.title}</strong>
-                <small>{chat.preview}</small>
-              </span>
+      {!isChatsCollapsed ? (
+        <aside className="floating-chat-card" aria-label="Chats recientes">
+          <div className="chat-card-head">
+            <div className="mini-brand">
+              <span />
+              <strong>CoCreate</strong>
+            </div>
+            <button type="button" title="Ocultar chats" onClick={() => setIsChatsCollapsed(true)}>
+              <PanelLeftClose size={15} />
             </button>
-          ))}
-        </div>
+          </div>
 
-        <button className="library-link" type="button">
-          <Archive size={15} />
-          <span>Biblioteca</span>
-        </button>
-      </aside> : null}
+          <button className="new-chat-button" type="button" title="Nuevo chat" onClick={createChat}>
+            <Plus size={15} />
+            <span>Nuevo chat</span>
+          </button>
+
+          <label className="chat-search">
+            <Search size={15} />
+            <input placeholder="Buscar chats" />
+          </label>
+
+          <div className="chat-list">
+            {threads.map((chat) => (
+              <button
+                key={chat.id}
+                className={activeChatId === chat.id ? "chat-row active" : "chat-row"}
+                type="button"
+                onClick={() => setActiveChatId(chat.id)}
+              >
+                <Code2 size={15} />
+                <span>
+                  <strong>{chat.title}</strong>
+                  <small>{chat.preview}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <button className="library-link" type="button">
+            <Archive size={15} />
+            <span>Biblioteca</span>
+          </button>
+        </aside>
+      ) : null}
 
       <header className="v01-topbar">
         <button
@@ -372,7 +560,7 @@ export function CoCreateV01Experience() {
         </div>
 
         <section className="conversation-strip" aria-label="Conversación">
-          {messages.map((message) => (
+          {activeMessages.map((message) => (
             <article key={message.id} className={`v01-message ${message.role}`}>
               {message.body}
             </article>

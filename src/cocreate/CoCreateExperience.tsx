@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import "./cocreate.css";
+import { getWebClientId, loadWebState, saveWebState } from "./web-persistence";
 
 type ThemeMode = "dark" | "light";
 type RecorderPhase = "idle" | "requesting" | "recording" | "stopping" | "ready" | "analyzing";
@@ -296,6 +297,7 @@ export function CoCreateExperience() {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const hasHydratedRef = useRef(false);
   const persistTimerRef = useRef<number | null>(null);
+  const clientIdRef = useRef("");
 
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [activeMode, setActiveMode] = useState<ActiveMode>("chat");
@@ -331,12 +333,46 @@ export function CoCreateExperience() {
 
   useEffect(() => {
     let cancelled = false;
+    clientIdRef.current = getWebClientId();
 
     const bootstrap = async () => {
       if (!window.overlayBridge) {
-        if (!cancelled) {
-          hasHydratedRef.current = true;
-          setStatus("Modo browser activo. Electron habilita Live Coding completo.");
+        try {
+          const persisted = await loadWebState<PersistedWorkbenchSnapshot>("workbench", clientIdRef.current);
+          if (cancelled) return;
+
+          const snapshot = readSnapshot(persisted.snapshot);
+          if (snapshot) {
+            setTheme(snapshot.theme);
+            setActiveMode(snapshot.activeMode);
+            setThreads(snapshot.threads);
+            setActiveThreadId(snapshot.activeThreadId);
+            setActiveTool(snapshot.activeTool);
+            setRightPanelOpen(snapshot.rightPanelOpen);
+            setProfileOpen(snapshot.profileOpen);
+            setSearchOpen(snapshot.searchOpen);
+            setWebEnabled(true);
+            setPrompt(snapshot.prompt);
+            setMessages(snapshot.messages);
+            setPhase(snapshot.phase === "recording" ? "idle" : snapshot.phase);
+            setStatus("Sesión web restaurada.");
+            setModel(snapshot.model || "gemini-3.5-flash");
+            setNotes(snapshot.notes);
+            setRecordingName(snapshot.recordingName);
+            setSavedRecording(snapshot.savedRecording);
+            setLastMimeType(snapshot.lastMimeType);
+            setError(snapshot.error);
+          } else {
+            setStatus("Modo browser activo. Electron habilita Live Coding completo.");
+          }
+        } catch {
+          if (!cancelled) {
+            setStatus("Modo browser activo. Electron habilita Live Coding completo.");
+          }
+        } finally {
+          if (!cancelled) {
+            hasHydratedRef.current = true;
+          }
         }
         return;
       }
@@ -413,7 +449,7 @@ export function CoCreateExperience() {
   }, []);
 
   useEffect(() => {
-    if (!hasHydratedRef.current || !window.overlayBridge?.saveRendererState) {
+    if (!hasHydratedRef.current) {
       return;
     }
 
@@ -444,17 +480,24 @@ export function CoCreateExperience() {
     });
 
     persistTimerRef.current = window.setTimeout(() => {
-      void window.overlayBridge
-        ?.saveRendererState({
-          title: activeThread?.title ?? "Workspace principal",
-          snapshot
-        })
-        .then((result) => {
-          if (result?.sessionId) {
-            setSessionId(result.sessionId);
-          }
-        })
-        .catch(() => {});
+      if (window.overlayBridge?.saveRendererState) {
+        void window.overlayBridge
+          .saveRendererState({
+            title: activeThread?.title ?? "Workspace principal",
+            snapshot
+          })
+          .then((result) => {
+            if (result?.sessionId) {
+              setSessionId(result.sessionId);
+            }
+          })
+          .catch(() => {});
+        return;
+      }
+
+      if (clientIdRef.current) {
+        void saveWebState("workbench", clientIdRef.current, snapshot).catch(() => {});
+      }
     }, 350);
 
     return () => {
@@ -844,7 +887,8 @@ export function CoCreateExperience() {
             },
             body: JSON.stringify({
               prompt: text,
-              history: messages
+              history: messages,
+              clientId: clientIdRef.current
             })
           }).then(async (response) => {
             const payload = await response.json().catch(() => null);

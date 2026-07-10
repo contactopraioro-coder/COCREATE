@@ -48,8 +48,12 @@ GEMINI_MODEL=gemini-3.5-flash
 CODEX_BINARY=codex
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MEMORY_MODEL=gpt-4.1-mini
 OPENAI_TRANSCRIBE_MODEL=gpt-4o-mini-transcribe
 GEMINI_API_KEY=...
+SEARCH_PROVIDER=auto
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
 ```
 
 ## Build
@@ -70,8 +74,27 @@ La parte Electron sigue siendo local de escritorio y no se despliega como app na
 Para que la experiencia web responda bien en Vercel:
 
 - `OPENAI_API_KEY` habilita chat web en `/api/chat`
+- `OPENAI_MEMORY_MODEL` controla el modelo usado para resumir memoria persistente del usuario
 - `OPENAI_TRANSCRIBE_MODEL` habilita transcripcion de voz en `/api/transcribe`
 - `GEMINI_API_KEY` sirve como alternativa para respuestas web si no usas OpenAI
+- `SEARCH_PROVIDER=auto` permite usar search autonomo con OpenAI y fallback inteligente
+- `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` habilitan persistencia real de chats, snapshots y memoria en `/api/state`
+
+## Supabase
+
+La capa web ya puede persistir:
+
+- estado de la vista `v0.1`
+- estado del `Workbench`
+- memoria resumida del usuario para reutilizar contexto entre sesiones
+
+Schema inicial:
+
+```bash
+psql "<tu-connection-string>" -f docs/supabase-schema.sql
+```
+
+Tambien puedes pegar [docs/supabase-schema.sql](/Users/lahighway/Documents/CALEIDOSCOPIO/docs/supabase-schema.sql) en el SQL Editor de Supabase.
 
 ## Permisos
 
