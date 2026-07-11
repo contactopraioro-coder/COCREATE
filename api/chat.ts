@@ -20,6 +20,24 @@ const searchProvider = process.env.SEARCH_PROVIDER ?? "auto";
 const supabaseUrl = process.env.SUPABASE_URL?.trim() ?? "";
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? "";
 
+function isQuotaError(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("exceeded your current quota") ||
+    normalized.includes("insufficient_quota") ||
+    normalized.includes("billing") ||
+    normalized.includes("rate limit")
+  );
+}
+
+function buildProviderUnavailableReply() {
+  return [
+    "La respuesta por OpenAI no esta disponible ahora mismo por cuota o facturacion del proyecto.",
+    "Si configuras `GEMINI_API_KEY` en Vercel, CoCreate puede seguir respondiendo como respaldo.",
+    "Tambien puedes revisar la facturacion de OpenAI y volver a intentar."
+  ].join("\n\n");
+}
+
 function cleanHistory(history: ChatMessage[] = []) {
   return history
     .filter((message) => typeof message?.body === "string" && message.body.trim())
@@ -404,7 +422,29 @@ export default async function handler(request: ApiRequest, response: ApiResponse
 
       const payload = await aiResponse.json().catch(() => null);
       if (!aiResponse.ok) {
-        throw new Error(payload?.error?.message ?? "OpenAI no pudo responder.");
+        const message = payload?.error?.message ?? "OpenAI no pudo responder.";
+        if (isQuotaError(message) && geminiKey) {
+          const output = await requestGeminiResponse(history, prompt, geminiKey, memorySummary);
+          response.status(200).json({
+            ok: true,
+            output,
+            provider: "gemini",
+            memorySummary
+          });
+          return;
+        }
+
+        if (isQuotaError(message)) {
+          response.status(200).json({
+            ok: true,
+            output: buildProviderUnavailableReply(),
+            provider: "fallback",
+            memorySummary
+          });
+          return;
+        }
+
+        throw new Error(message);
       }
 
       const output = extractOpenAIText(payload);

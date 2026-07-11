@@ -10,6 +10,16 @@ type ApiResponse = {
 
 const defaultTranscribeModel = process.env.OPENAI_TRANSCRIBE_MODEL ?? "gpt-4o-mini-transcribe";
 
+function isQuotaError(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("exceeded your current quota") ||
+    normalized.includes("insufficient_quota") ||
+    normalized.includes("billing") ||
+    normalized.includes("rate limit")
+  );
+}
+
 export default async function handler(request: ApiRequest, response: ApiResponse) {
   if (request.method !== "POST") {
     response.status(405).json({ error: "Method not allowed" });
@@ -43,7 +53,14 @@ export default async function handler(request: ApiRequest, response: ApiResponse
 
     const payload = await aiResponse.json().catch(() => null);
     if (!aiResponse.ok) {
-      throw new Error(payload?.error?.message ?? "OpenAI no pudo transcribir el audio.");
+      const message = payload?.error?.message ?? "OpenAI no pudo transcribir el audio.";
+      if (isQuotaError(message)) {
+        throw new Error(
+          "La transcripcion de voz no esta disponible ahora mismo porque la cuota o facturacion de OpenAI se agoto."
+        );
+      }
+
+      throw new Error(message);
     }
 
     const text = typeof payload?.text === "string" ? payload.text.trim() : "";

@@ -16,6 +16,16 @@ type ChatMessage = {
 const defaultOpenAIModel = process.env.OPENAI_TITLE_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
 const defaultGeminiModel = process.env.GEMINI_WEB_MODEL ?? "gemini-2.5-flash";
 
+function isQuotaError(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("exceeded your current quota") ||
+    normalized.includes("insufficient_quota") ||
+    normalized.includes("billing") ||
+    normalized.includes("rate limit")
+  );
+}
+
 function cleanHistory(history: ChatMessage[] = []) {
   return history
     .filter((message) => typeof message?.body === "string" && message.body.trim())
@@ -109,6 +119,12 @@ export default async function handler(request: ApiRequest, response: ApiResponse
       if (aiResponse.ok) {
         const title = sanitizeTitle(extractOpenAIText(payload));
         response.status(200).json({ ok: true, title: title || buildFallbackTitle(prompt) });
+        return;
+      }
+
+      const openAiMessage = payload?.error?.message;
+      if (typeof openAiMessage === "string" && !isQuotaError(openAiMessage)) {
+        response.status(200).json({ ok: true, title: buildFallbackTitle(prompt) });
         return;
       }
     }
