@@ -68,6 +68,12 @@ button:disabled {
   gap: 16px;
 }
 
+.topbar-left {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+}
+
 .brand-mark,
 .mini-brand {
   display: inline-flex;
@@ -82,6 +88,17 @@ button:disabled {
   background: transparent;
   color: inherit;
   padding: 0;
+}
+
+.sidebar-reveal {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
 }
 
 .brand-mark strong,
@@ -119,6 +136,7 @@ button:disabled {
 
 .topbar-actions a,
 .theme-toggle,
+.sidebar-reveal,
 .primary-action,
 .floating-chat-card button,
 .chat-search {
@@ -126,12 +144,6 @@ button:disabled {
   border-radius: 8px;
   background: transparent;
   color: inherit;
-}
-
-.topbar-actions a {
-  padding: 10px 12px;
-  text-decoration: none;
-  color: color-mix(in srgb, currentColor 70%, transparent);
 }
 
 .theme-toggle {
@@ -142,13 +154,13 @@ button:disabled {
 }
 
 .v01-dark .theme-toggle,
-.v01-dark .topbar-actions a {
+.v01-dark .sidebar-reveal {
   background: rgba(255, 255, 255, 0.05);
   border-color: rgba(255, 255, 255, 0.08);
 }
 
 .v01-light .theme-toggle,
-.v01-light .topbar-actions a {
+.v01-light .sidebar-reveal {
   background: rgba(17, 17, 17, 0.04);
   border-color: rgba(17, 17, 17, 0.08);
 }

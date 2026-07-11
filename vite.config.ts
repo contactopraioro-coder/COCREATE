@@ -160,6 +160,45 @@ export default defineConfig({
           }
         });
 
+        server.middlewares.use("/api/title", async (request, response) => {
+          if (request.method !== "POST") {
+            response.statusCode = 405;
+            response.setHeader("Content-Type", "application/json");
+            response.end(JSON.stringify({ error: "Method not allowed" }));
+            return;
+          }
+
+          try {
+            const payload = await readJsonBody(request);
+            const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
+            if (!prompt) {
+              response.statusCode = 400;
+              response.setHeader("Content-Type", "application/json");
+              response.end(JSON.stringify({ error: "No hay prompt para titular." }));
+              return;
+            }
+
+            const title = prompt
+              .replace(/\s+/g, " ")
+              .trim()
+              .split(" ")
+              .slice(0, 5)
+              .join(" ")
+              .slice(0, 48);
+
+            response.setHeader("Content-Type", "application/json");
+            response.end(JSON.stringify({ ok: true, title: title || "Nuevo chat" }));
+          } catch (cause) {
+            response.statusCode = 500;
+            response.setHeader("Content-Type", "application/json");
+            response.end(
+              JSON.stringify({
+                error: cause instanceof Error ? cause.message : "No pude generar el titulo."
+              })
+            );
+          }
+        });
+
         server.middlewares.use("/api/state", async (request, response) => {
           if (request.method === "GET") {
             const requestUrl = new URL(request.url ?? "/", "http://localhost");

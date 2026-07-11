@@ -5,6 +5,7 @@ import {
   Mic,
   MoonStar,
   PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Search,
   Send,
@@ -65,28 +66,15 @@ const getSpeechRecognition = () => {
   return windowWithSpeech.SpeechRecognition ?? windowWithSpeech.webkitSpeechRecognition;
 };
 
-const recentChats: ChatThread[] = [
-  {
-    id: "v01-main",
-    title: "CoCreate v0.1",
-    preview: "Superficie limpia para codear"
-  },
-  {
-    id: "v01-live",
-    title: "Live Coding concept",
-    preview: "Captura de pantalla a prompt"
-  },
-  {
-    id: "v01-ui",
-    title: "UI shell",
-    preview: "Tema oscuro y claro"
-  },
-  {
-    id: "v01-codex",
-    title: "Codex bridge",
-    preview: "Conectar CLI y ejecución"
-  }
-];
+const defaultThreadId = "v01-default";
+const legacyThreadIds = new Set(["v01-main", "v01-live", "v01-ui", "v01-codex"]);
+const legacyThreadTitles = new Set(["CoCreate v0.1", "Live Coding concept", "UI shell", "Codex bridge"]);
+
+const defaultThread: ChatThread = {
+  id: defaultThreadId,
+  title: "Nuevo chat",
+  preview: "Sin mensajes todavía"
+};
 
 const welcomeMessage: ChatMessage = {
   id: "welcome",
@@ -97,10 +85,13 @@ const welcomeMessage: ChatMessage = {
 const createMessageId = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 
 function createInitialMessagesByThread() {
-  return recentChats.reduce<ThreadMessages>((accumulator, chat, index) => {
-    accumulator[chat.id] = index === 0 ? [welcomeMessage] : [];
-    return accumulator;
-  }, {});
+  return {
+    [defaultThreadId]: [welcomeMessage]
+  };
+}
+
+function createInitialThreads() {
+  return [defaultThread];
 }
 
 function isChatMessage(value: unknown): value is ChatMessage {
@@ -119,7 +110,7 @@ function readV01Snapshot(value: unknown): V01Snapshot | null {
   }
 
   const candidate = value as Partial<V01Snapshot>;
-  const threads = Array.isArray(candidate.threads)
+  const rawThreads = Array.isArray(candidate.threads)
     ? candidate.threads.filter(
         (thread): thread is ChatThread =>
           Boolean(
@@ -130,28 +121,41 @@ function readV01Snapshot(value: unknown): V01Snapshot | null {
               typeof (thread as ChatThread).preview === "string"
           )
       )
-    : recentChats;
+    : createInitialThreads();
+
+  const threads = rawThreads.filter(
+    (thread) => !legacyThreadIds.has(thread.id) && !legacyThreadTitles.has(thread.title)
+  );
 
   const fallbackMessages = createInitialMessagesByThread();
   const messagesByThread =
     candidate.messagesByThread && typeof candidate.messagesByThread === "object"
       ? Object.entries(candidate.messagesByThread).reduce<ThreadMessages>((accumulator, [threadId, messages]) => {
+          if (legacyThreadIds.has(threadId)) {
+            return accumulator;
+          }
           accumulator[threadId] = Array.isArray(messages) ? messages.filter(isChatMessage) : [];
           return accumulator;
         }, fallbackMessages)
       : fallbackMessages;
 
-  if (!messagesByThread[threads[0]?.id]) {
-    messagesByThread[threads[0]?.id] = [welcomeMessage];
+  const safeThreads = threads.length ? threads : createInitialThreads();
+
+  if (!messagesByThread[safeThreads[0]?.id]) {
+    messagesByThread[safeThreads[0]?.id] = [welcomeMessage];
   }
 
   return {
     theme: candidate.theme === "light" ? "light" : "dark",
     prompt: typeof candidate.prompt === "string" ? candidate.prompt : "",
     activeChatId:
-      typeof candidate.activeChatId === "string" && candidate.activeChatId ? candidate.activeChatId : threads[0].id,
+      typeof candidate.activeChatId === "string" &&
+      candidate.activeChatId &&
+      !legacyThreadIds.has(candidate.activeChatId)
+        ? candidate.activeChatId
+        : safeThreads[0].id,
     isChatsCollapsed: typeof candidate.isChatsCollapsed === "boolean" ? candidate.isChatsCollapsed : false,
-    threads: threads.length ? threads : recentChats,
+    threads: safeThreads,
     messagesByThread
   };
 }
@@ -163,15 +167,25 @@ export function CoCreateV01Experience() {
   const persistTimerRef = useRef<number | null>(null);
   const hasHydratedRef = useRef(false);
   const clientIdRef = useRef("");
+  const titleGenerationRef = useRef<Set<string>>(new Set());
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [prompt, setPrompt] = useState("");
-  const [threads, setThreads] = useState<ChatThread[]>(recentChats);
-  const [activeChatId, setActiveChatId] = useState(recentChats[0].id);
+  const [threads, setThreads] = useState<ChatThread[]>(createInitialThreads);
+  const [activeChatId, setActiveChatId] = useState(defaultThreadId);
   const [isChatsCollapsed, setIsChatsCollapsed] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [messagesByThread, setMessagesByThread] = useState<ThreadMessages>(createInitialMessagesByThread);
   const [isRunning, setIsRunning] = useState(false);
+  const [chatSearch, setChatSearch] = useState("");
   const activeMessages = messagesByThread[activeChatId] ?? [];
+  const visibleThreads = threads.filter((thread) => {
+    const query = chatSearch.trim().toLowerCase();
+    if (!query) {
+      return true;
+    }
+
+    return `${thread.title} ${thread.preview}`.toLowerCase().includes(query);
+  });
 
   useEffect(() => {
     clientIdRef.current = getWebClientId();
@@ -281,12 +295,58 @@ export function CoCreateV01Experience() {
     }));
     setActiveChatId(nextId);
     setPrompt("");
+    setChatSearch("");
+  };
+
+  const generateThreadTitle = async (threadId: string, promptText: string, history: ChatMessage[]) => {
+    if (titleGenerationRef.current.has(threadId)) {
+      return;
+    }
+
+    titleGenerationRef.current.add(threadId);
+
+    try {
+      const response = await fetch("/api/title", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          prompt: promptText,
+          history,
+          clientId: clientIdRef.current
+        })
+      });
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || typeof payload?.title !== "string" || !payload.title.trim()) {
+        return;
+      }
+
+      const title = payload.title.trim().slice(0, 48);
+      setThreads((current) =>
+        current.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                title
+              }
+            : thread
+        )
+      );
+    } catch {
+      return;
+    } finally {
+      titleGenerationRef.current.delete(threadId);
+    }
   };
 
   const sendPrompt = async () => {
     const text = prompt.trim();
     if (!text || isRunning) return;
 
+    const requestHistory = activeMessages;
+    const activeThread = threads.find((thread) => thread.id === activeChatId);
     setPrompt("");
     appendMessage("user", text);
     setThreads((current) =>
@@ -294,12 +354,16 @@ export function CoCreateV01Experience() {
         thread.id === activeChatId
           ? {
               ...thread,
-              title: thread.title === "Nuevo chat" ? text.slice(0, 36) : thread.title,
+              title: thread.title === "Nuevo chat" ? "Generando título..." : thread.title,
               preview: text.slice(0, 72)
             }
           : thread
       )
     );
+
+    if (activeThread?.title === "Nuevo chat") {
+      void generateThreadTitle(activeChatId, text, requestHistory);
+    }
 
     setIsRunning(true);
     try {
@@ -312,7 +376,7 @@ export function CoCreateV01Experience() {
             },
             body: JSON.stringify({
               prompt: text,
-              history: activeMessages,
+              history: requestHistory,
               clientId: clientIdRef.current
             })
           }).then(async (response) => {
@@ -468,11 +532,15 @@ export function CoCreateV01Experience() {
 
           <label className="chat-search">
             <Search size={15} />
-            <input placeholder="Buscar chats" />
+            <input
+              placeholder="Buscar chats"
+              value={chatSearch}
+              onChange={(event) => setChatSearch(event.target.value)}
+            />
           </label>
 
           <div className="chat-list">
-            {threads.map((chat) => (
+            {visibleThreads.map((chat) => (
               <button
                 key={chat.id}
                 className={activeChatId === chat.id ? "chat-row active" : "chat-row"}
@@ -496,20 +564,32 @@ export function CoCreateV01Experience() {
       ) : null}
 
       <header className="v01-topbar">
-        <button
-          className="brand-mark"
-          type="button"
-          aria-label="Abrir chats de CoCreate"
-          onClick={() => setIsChatsCollapsed((value) => !value)}
-        >
-          <span className="brand-orbit" />
-          <strong>CoCreate</strong>
-        </button>
+        <div className="topbar-left">
+          {isChatsCollapsed ? (
+            <button
+              className="brand-mark"
+              type="button"
+              aria-label="Abrir chats de CoCreate"
+              onClick={() => setIsChatsCollapsed(false)}
+            >
+              <span className="brand-orbit" />
+              <strong>CoCreate</strong>
+            </button>
+          ) : (
+            <button
+              className="sidebar-reveal"
+              type="button"
+              aria-label="Ocultar chats"
+              onClick={() => setIsChatsCollapsed(true)}
+            >
+              <PanelLeftClose size={16} />
+            </button>
+          )}
+        </div>
 
         <h1 className="top-title">Code with intent.</h1>
 
         <div className="topbar-actions">
-          <a href="#/workbench">Workbench</a>
           <button
             className="theme-toggle"
             type="button"
