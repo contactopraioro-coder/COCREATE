@@ -1,0 +1,34 @@
+export type UpstreamStability = "stable" | "experimental" | "unsupported" | "unknown";
+export type ParityFeatureFlagKey = "planMode" | "scheduledTasks" | "skills" | "plugins" | "githubIntegration" | "experimentalUpstream" | "nativeVoice" | "nativeFilePicker";
+export type FeatureFlagSnapshot = Record<ParityFeatureFlagKey, boolean>;
+export type UpstreamCapabilityDescriptor = {
+  id: string;
+  flag: ParityFeatureFlagKey | null;
+  stability: UpstreamStability;
+  source: "app-server" | "mcp" | "provider" | "local" | "cocreate";
+  minimumVersion?: string;
+  environment: Array<"desktop" | "web">;
+  featureFlag?: string;
+  authRequired?: boolean;
+  reason: string;
+  enabled?: boolean;
+  state?: "Enabled" | "Disabled" | "Unavailable" | "Experimental" | "Desktop only";
+  upstreamVersion?: string | null;
+  compatibilityReason?: string | null;
+  lastError?: string | null;
+};
+export type UpstreamStabilitySnapshot = {
+  environment: "desktop" | "web";
+  upstreamVersion: string | null;
+  validatedVersion: string;
+  compatible: boolean;
+  flags: FeatureFlagSnapshot;
+  descriptors: UpstreamCapabilityDescriptor[];
+  updatedAt: string;
+};
+export const UPSTREAM_VALIDATED_VERSION: "0.134.0";
+export const UPSTREAM_CAPABILITY_DESCRIPTORS: readonly UpstreamCapabilityDescriptor[];
+export const PARITY_FEATURE_FLAG_KEYS: readonly ParityFeatureFlagKey[];
+export function compareCodexVersions(left: unknown, right: unknown): -1 | 0 | 1 | null;
+export function resolveParityFeatureFlags(options?: { environment?: "desktop" | "web"; upstreamVersion?: string | null; compatible?: boolean; overrides?: Partial<Record<ParityFeatureFlagKey, unknown>> }): FeatureFlagSnapshot;
+export function buildUpstreamStabilitySnapshot(options?: { environment?: "desktop" | "web"; upstreamVersion?: string | null; compatible?: boolean; overrides?: Partial<Record<ParityFeatureFlagKey, unknown>> }): UpstreamStabilitySnapshot;

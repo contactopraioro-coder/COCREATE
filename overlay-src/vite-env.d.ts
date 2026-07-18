@@ -1,5 +1,12 @@
 /// <reference types="vite/client" />
 
+import type {
+  CancelCodexExecutionRequest,
+  CodexExecutionEvent,
+  CodexStatus,
+  StartCodexExecutionRequest
+} from "../shared/codex-contracts";
+
 declare global {
   interface Window {
     overlayBridge?: {
@@ -65,14 +72,23 @@ declare global {
         ok: boolean;
         sessionId: string | null;
       }>;
-      getCodexStatus: () => Promise<import("./types").CodexStatus>;
+      getCodexStatus: () => Promise<CodexStatus>;
+      startCodexExecution: (payload: StartCodexExecutionRequest) => Promise<{
+        ok: true;
+        executionId: string;
+      }>;
+      cancelCodexExecution: (payload: CancelCodexExecutionRequest) => Promise<{
+        ok: boolean;
+        executionId: string;
+        alreadyTerminated: boolean;
+      }>;
+      onCodexEvent: (listener: (event: CodexExecutionEvent) => void) => () => void;
       saveRecording: (payload: {
         buffer: Uint8Array;
         mimeType: string;
         suggestedName?: string;
       }) => Promise<import("./types").SaveRecordingResult>;
       analyzeRecording: (payload: {
-        apiKey: string;
         model: string;
         notes: string;
         filePath: string;

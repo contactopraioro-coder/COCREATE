@@ -5,3 +5,5 @@ data
 overlay-dist
 release
 .vercel
+.test-build
+.env*

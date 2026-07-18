@@ -1,12 +1,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { generateAssistantReply, transcribeAudio } from "./api/_lib/assistant";
+import { collectExecutionOutput, createNodeCodexAdapter } from "./shared/codex-runner.js";
 
 const devStateStore = new Map<string, { snapshot: unknown; memorySummary: string }>();
+const devCodexAdapter = createNodeCodexAdapter({
+  cwd: process.cwd(),
+  binary: process.env.CODEX_BINARY ?? "codex",
+  defaultOrigin: "vite-dev-api"
+});
 
 function readJsonBody(request: import("node:http").IncomingMessage) {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -25,77 +27,8 @@ function readJsonBody(request: import("node:http").IncomingMessage) {
   });
 }
 
-async function runCodex(prompt: string) {
-  const runDir = await mkdtemp(path.join(tmpdir(), "cocreate-codex-"));
-  const lastMessagePath = path.join(runDir, "last-message.txt");
-
-  return new Promise<{ ok: boolean; output: string; stderr?: string }>((resolve, reject) => {
-    const child = spawn(
-      process.env.CODEX_BINARY ?? "codex",
-      [
-        "exec",
-        "--cd",
-        process.cwd(),
-        "--sandbox",
-        "workspace-write",
-        "--output-last-message",
-        lastMessagePath,
-        "-"
-      ],
-      {
-        cwd: process.cwd(),
-        stdio: ["pipe", "pipe", "pipe"]
-      }
-    );
-
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error("Codex tardó demasiado y se detuvo la ejecución."));
-    }, 10 * 60 * 1000);
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (cause) => {
-      clearTimeout(timeout);
-      rm(runDir, { recursive: true, force: true }).catch(() => {});
-      reject(cause);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      const output = stdout.trim();
-      const diagnostics = stderr.trim();
-      if (code === 0) {
-        readFile(lastMessagePath, "utf8")
-          .catch(() => output || diagnostics || "Codex terminó sin salida.")
-          .then((lastMessage) => {
-            resolve({
-              ok: true,
-              output: lastMessage.trim() || output || diagnostics || "Codex terminó sin salida.",
-              stderr: diagnostics
-            });
-          })
-          .finally(() => {
-            rm(runDir, { recursive: true, force: true }).catch(() => {});
-          });
-        return;
-      }
-
-      rm(runDir, { recursive: true, force: true }).catch(() => {});
-      reject(new Error(diagnostics || output || `Codex terminó con código ${code}.`));
-    });
-
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
-}
-
 export default defineConfig({
+  base: "./",
   plugins: [
     react(),
     {
@@ -119,7 +52,11 @@ export default defineConfig({
               return;
             }
 
-            const result = await runCodex(prompt);
+            const result = await collectExecutionOutput(devCodexAdapter, {
+              prompt,
+              cwd: process.cwd(),
+              origin: "vite-dev-api"
+            });
             response.setHeader("Content-Type", "application/json");
             response.end(JSON.stringify(result));
           } catch (cause) {

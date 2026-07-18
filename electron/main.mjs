@@ -1,642 +1,630 @@
 import "dotenv/config";
-import { app, BrowserWindow, clipboard, ipcMain } from "electron";
-import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, session } from "electron";
+import { config as loadEnv } from "dotenv";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { collectExecutionOutput, createNodeCodexAdapter } from "../shared/codex-runner.js";
+import { createCodexAppServerProcessManager } from "../infrastructure/codex-app-server/process-manager.js";
+import { createCodexAppServerAdapter } from "../infrastructure/codex-app-server/app-server-adapter.js";
+import { createCodexRuntimeAdapter } from "../infrastructure/codex-app-server/runtime-selector.js";
+import { ProviderRegistry, ProviderRuntime } from "../shared/provider-runtime.js";
+import { createTrustedWebProviderAdapter } from "../infrastructure/trusted-web/create-trusted-web-provider-adapter.js";
+import { createIdentityRuntime } from "../shared/identity-runtime.js";
+import { createAnalysisService } from "./analysis-service.mjs";
+import { createApprovalBroker } from "./approval-broker.mjs";
+import { createAppStateStore } from "./app-state-store.mjs";
+import { registerAppIpcHandlers } from "./app-ipc.mjs";
+import { registerCodexIpcHandlers } from "./codex-ipc.mjs";
+import { createFoundationStore } from "./foundation-store.mjs";
+import { registerIdentityIpcHandlers } from "./identity-ipc.mjs";
+import { createIdentityStore } from "./identity-store.mjs";
+import { createWorkspaceRuntime } from "../shared/workspace-runtime.js";
+import { registerWorkspaceIpcHandlers } from "./workspace-ipc.mjs";
+import { registerTrustedWebIpcHandlers } from "./trusted-web-ipc.mjs";
+import { createWorkspaceStore } from "./workspace-store.mjs";
+import { createMainWindow } from "./window.mjs";
+import { createAttachmentBroker } from "./attachment-broker.mjs";
+import { registerGitContextIpc } from "./git-context.mjs";
+import { createUpstreamStabilityAdapter } from "../infrastructure/codex-app-server/upstream-stability-adapter.js";
+import { registerUpstreamCapabilitiesIpc } from "./upstream-capabilities-ipc.mjs";
+import { resolveParityFeatureFlags } from "../shared/upstream-stability.js";
+import { registerVoiceIpc } from "./voice-ipc.mjs";
+import { createProposalRuntime, registerProposalRuntimeIpc } from "./proposal-runtime.mjs";
+import { registerScreenSharingIpc } from "./screen-sharing-ipc.mjs";
+import { createImplementationRuntime, registerImplementationRuntimeIpc } from "./implementation-runtime.mjs";
 
-const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
+loadEnv({ path: path.join(rootDir, ".env.local"), override: false });
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const defaultGeminiModel = process.env.GEMINI_MODEL ?? "gemini-3.5-flash";
 const codexBinary = process.env.CODEX_BINARY ?? "codex";
+const codexRuntimeMode = process.env.CODEX_RUNTIME_MODE ?? "auto";
+const codexWebSearchMode = ["disabled", "cached", "live"].includes(process.env.CODEX_WEB_SEARCH_MODE)
+  ? process.env.CODEX_WEB_SEARCH_MODE
+  : "live";
+const isSmokeTest = process.env.CO_CREATE_SMOKE_TEST === "1";
+const smokeTestResultFile = process.env.COCREATE_SMOKE_TEST_RESULT_FILE?.trim() || "";
 const featureFlags = {
   persistentSessions: true,
   liveCompare: process.env.FEATURE_LIVE_COMPARE === "1",
   realtimeChunks: process.env.FEATURE_REALTIME_CHUNKS === "1",
   autoApplyCodex: process.env.FEATURE_AUTO_APPLY_CODEX === "1"
 };
-
-let mainWindow = null;
-
-function createId(prefix = "id") {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
+const parityFeatureFlagOverrides = {
+  experimentalUpstream: process.env.COCREATE_FEATURE_EXPERIMENTAL_UPSTREAM,
+  planMode: process.env.COCREATE_FEATURE_PLAN_MODE,
+  skills: process.env.COCREATE_FEATURE_SKILLS,
+  plugins: process.env.COCREATE_FEATURE_PLUGINS,
+  scheduledTasks: process.env.COCREATE_FEATURE_SCHEDULED_TASKS,
+  githubIntegration: process.env.COCREATE_FEATURE_GITHUB,
+  nativeVoice: process.env.COCREATE_FEATURE_NATIVE_VOICE,
+  nativeFilePicker: process.env.COCREATE_FEATURE_NATIVE_FILE_PICKER
+};
 
 function getAppVideoDir() {
-  return path.join(app.getPath("movies"), "Caleidoscopio");
-}
-
-function getStateStorePath() {
-  return path.join(app.getPath("userData"), "state", "app-state.json");
-}
-
-function sanitizeFileName(value) {
-  return value.replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase();
-}
-
-function buildRecordingName() {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `caleidoscopio-${stamp}.webm`;
-}
-
-function createSession(title = "Workspace principal") {
-  const now = Date.now();
-  return {
-    id: createId("session"),
-    title,
-    createdAt: now,
-    updatedAt: now,
-    renderer: {
-      workbench: null
-    },
-    events: []
-  };
-}
-
-function createEmptyAppState() {
-  return {
-    version: 1,
-    updatedAt: Date.now(),
-    activeSessionId: null,
-    sessions: []
-  };
-}
-
-function ensureActiveSession(state) {
-  if (!state.activeSessionId || !state.sessions.some((session) => session.id === state.activeSessionId)) {
-    const session = createSession();
-    state.sessions = [session, ...state.sessions];
-    state.activeSessionId = session.id;
-    state.updatedAt = Date.now();
-    return session;
-  }
-
-  return state.sessions.find((session) => session.id === state.activeSessionId) ?? null;
-}
-
-async function readJsonFileSafe(filePath, fallback) {
   try {
-    const raw = await readFile(filePath, "utf8");
-    return JSON.parse(raw);
+    return path.join(app.getPath("movies"), "Caleidoscopio");
   } catch {
-    return fallback;
+    return path.join(app.getPath("documents"), "Caleidoscopio");
   }
 }
+const getAppStateStorePath = () => path.join(app.getPath("userData"), "state", "app-state.json");
+const getFoundationStorePath = () => path.join(app.getPath("userData"), "state", "foundation-store.json");
+const getWorkspaceStorePath = () => path.join(app.getPath("userData"), "state", "workspace-runtime.json");
+const getIdentityStorePath = () => path.join(app.getPath("userData"), "state", "identity-store.json");
+const getProposalRuntimePath = () => path.join(app.getPath("userData"), "state", "proposals");
+const getImplementationRuntimePath = () => path.join(app.getPath("userData"), "state", "implementations");
+const getRuntimeWorkingDirectory = () => app.isPackaged ? app.getPath("userData") : rootDir;
 
-async function writeJsonAtomic(filePath, payload) {
-  const directory = path.dirname(filePath);
-  await mkdir(directory, { recursive: true });
-  const tempFile = `${filePath}.tmp`;
-  await writeFile(tempFile, JSON.stringify(payload, null, 2), "utf8");
-  await rename(tempFile, filePath);
-}
+let disposeCodexIpc = () => undefined;
+let disposeAppIpc = () => undefined;
+let disposeWorkspaceIpc = () => undefined;
+let disposeIdentityIpc = () => undefined;
+let disposeTrustedWebIpc = () => undefined;
+let disposeAttachmentBroker = () => undefined;
+let disposeGitContextIpc = () => undefined;
+let disposeUpstreamCapabilitiesIpc = () => undefined;
+let disposeVoiceIpc = () => undefined;
+let disposeProposalRuntimeIpc = () => undefined;
+let disposeScreenSharingIpc = () => undefined;
+let disposeImplementationRuntimeIpc = () => undefined;
 
-async function loadPersistedState() {
-  const state = await readJsonFileSafe(getStateStorePath(), createEmptyAppState());
-  if (!state || typeof state !== "object") {
-    return createEmptyAppState();
-  }
+function createRuntime({ requestApproval }) {
+  const runtimeWorkingDirectory = getRuntimeWorkingDirectory();
+  const appStateStore = createAppStateStore({
+    filePath: getAppStateStorePath()
+  });
+  const foundationStore = createFoundationStore({
+    filePath: getFoundationStorePath()
+  });
+  const workspaceStore = createWorkspaceStore({
+    filePath: getWorkspaceStorePath()
+  });
+  const identityStore = createIdentityStore({
+    filePath: getIdentityStorePath()
+  });
+  const identityRuntime = createIdentityRuntime({
+    store: identityStore
+  });
+  const workspaceRuntime = createWorkspaceRuntime({
+    store: workspaceStore
+  });
+  const execCodexAdapter = createNodeCodexAdapter({
+    binary: codexBinary,
+    cwd: runtimeWorkingDirectory,
+    defaultOrigin: "desktop-renderer"
+  });
+  const codexAppServerProcessManager = createCodexAppServerProcessManager({
+    binary: codexBinary,
+    cwd: runtimeWorkingDirectory,
+    clientVersion: app.getVersion(),
+    webSearchMode: codexWebSearchMode
+  });
+  const appServerCodexAdapter = createCodexAppServerAdapter({
+    processManager: codexAppServerProcessManager,
+    cwd: runtimeWorkingDirectory,
+    webSearchMode: codexWebSearchMode,
+    persistThreadMapping: async (mapping) => {
+      await workspaceRuntime.associateCodexThread(mapping, await identityRuntime.getSnapshot());
+    },
+    requestApproval
+  });
+  const codexAdapter = createCodexRuntimeAdapter({
+    appServerAdapter: appServerCodexAdapter,
+    execAdapter: execCodexAdapter,
+    mode: codexRuntimeMode
+  });
+  const upstreamStabilityAdapter = createUpstreamStabilityAdapter({
+    processManager: codexAppServerProcessManager,
+    cwd: runtimeWorkingDirectory,
+    featureFlagOverrides: parityFeatureFlagOverrides
+  });
+  const analysisService = createAnalysisService({
+    getVideoDir: getAppVideoDir,
+    defaultGeminiModel,
+    geminiApiKey: process.env.GEMINI_API_KEY?.trim() ?? "",
+    appStateStore
+  });
+  const trustedWebProvider = createTrustedWebProviderAdapter();
+  const trustedWebProviderRuntime = new ProviderRuntime({
+    registry: new ProviderRegistry([trustedWebProvider]),
+    timeoutMs: Number(process.env.TRUSTED_WEB_TOTAL_TIMEOUT_MS) || 30_000
+  });
+  const proposalRuntime = createProposalRuntime({
+    baseDir: getProposalRuntimePath()
+  });
+  const implementationRuntime = createImplementationRuntime({
+    baseDir: getImplementationRuntimePath(),
+    proposalRuntime
+  });
 
-  const normalized = {
-    version: typeof state.version === "number" ? state.version : 1,
-    updatedAt: typeof state.updatedAt === "number" ? state.updatedAt : Date.now(),
-    activeSessionId: typeof state.activeSessionId === "string" ? state.activeSessionId : null,
-    sessions: Array.isArray(state.sessions) ? state.sessions : []
-  };
-
-  ensureActiveSession(normalized);
-  return normalized;
-}
-
-async function savePersistedState(state) {
-  state.updatedAt = Date.now();
-  await writeJsonAtomic(getStateStorePath(), state);
-  return state;
-}
-
-async function updatePersistedState(mutator) {
-  const state = await loadPersistedState();
-  const activeSession = ensureActiveSession(state);
-  await mutator(state, activeSession);
-  ensureActiveSession(state);
-  await savePersistedState(state);
   return {
-    state,
-    session: state.sessions.find((item) => item.id === state.activeSessionId) ?? null
+    appStateStore,
+    foundationStore,
+    workspaceStore,
+    identityStore,
+    identityRuntime,
+    workspaceRuntime,
+    codexAppServerProcessManager,
+    codexAdapter,
+    upstreamStabilityAdapter,
+    analysisService,
+    trustedWebProviderRuntime,
+    proposalRuntime,
+    implementationRuntime
   };
 }
 
-function appendSessionEvent(session, event) {
-  const entry = {
-    id: createId("event"),
-    type: typeof event?.type === "string" ? event.type : "event",
-    source: typeof event?.source === "string" ? event.source : "renderer",
-    payload: event?.payload && typeof event.payload === "object" ? event.payload : {},
-    createdAt: Date.now()
-  };
-
-  session.events = Array.isArray(session.events) ? session.events : [];
-  session.events.push(entry);
-  if (session.events.length > 250) {
-    session.events = session.events.slice(-250);
-  }
-  session.updatedAt = Date.now();
-  return entry;
-}
-
-async function createMainWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1360,
-    height: 900,
-    minWidth: 1040,
-    minHeight: 700,
-    title: "CoCreate",
-    backgroundColor: "#f7f7f5",
-    autoHideMenuBar: true,
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    trafficLightPosition: { x: 18, y: 18 },
-    vibrancy: process.platform === "darwin" ? "under-window" : undefined,
-    visualEffectState: "active",
-    webPreferences: {
-      preload: path.join(__dirname, "preload.mjs"),
-      contextIsolation: true,
-      nodeIntegration: false
-    }
-  });
-
-  if (rendererUrl) {
-    await mainWindow.loadURL(rendererUrl);
-  } else {
-    await mainWindow.loadFile(path.join(rootDir, "dist", "index.html"));
-  }
-}
-
-async function resolveCodexStatus() {
-  try {
-    const { stdout, stderr } = await execFileAsync(codexBinary, ["--version"], {
-      timeout: 5000
-    });
-    return {
-      available: true,
-      binary: codexBinary,
-      version: (stdout || stderr).trim() || "installed",
-      license: "Apache-2.0",
-      source: "https://github.com/openai/codex",
-      mode: "cli-upstream"
-    };
-  } catch (cause) {
-    return {
-      available: false,
-      binary: codexBinary,
-      version: null,
-      license: "Apache-2.0",
-      source: "https://github.com/openai/codex",
-      mode: "cli-upstream",
-      error:
-        cause instanceof Error
-          ? cause.message
-          : "Codex CLI is not available in PATH."
-    };
-  }
-}
-
-async function runCodexPrompt(prompt) {
-  const trimmedPrompt = typeof prompt === "string" ? prompt.trim() : "";
-  if (!trimmedPrompt) {
-    throw new Error("No hay prompt para ejecutar en Codex.");
-  }
-
-  const runDir = await mkdtemp(path.join(tmpdir(), "cocreate-codex-"));
-  const lastMessagePath = path.join(runDir, "last-message.txt");
-
-  return await new Promise((resolve, reject) => {
-    const child = spawn(
-      codexBinary,
-      [
-        "exec",
-        "--cd",
-        rootDir,
-        "--sandbox",
-        "workspace-write",
-        "--output-last-message",
-        lastMessagePath,
-        "-"
-      ],
-      {
-        cwd: rootDir,
-        stdio: ["pipe", "pipe", "pipe"]
-      }
-    );
-
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error("Codex tardó demasiado y se detuvo la ejecución."));
-    }, 10 * 60 * 1000);
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (cause) => {
-      clearTimeout(timeout);
-      reject(cause);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      const output = stdout.trim();
-      const diagnostics = stderr.trim();
-      if (code === 0) {
-        readFile(lastMessagePath, "utf8")
-          .catch(() => output || diagnostics || "Codex terminó sin salida.")
-          .then((lastMessage) => {
-            resolve({
-              ok: true,
-              output: lastMessage.trim() || output || diagnostics || "Codex terminó sin salida.",
-              stderr: diagnostics
-            });
-          })
-          .finally(() => {
-            rm(runDir, { recursive: true, force: true }).catch(() => {});
-          });
-        return;
-      }
-
-      rm(runDir, { recursive: true, force: true }).catch(() => {});
-      reject(new Error(diagnostics || output || `Codex terminó con código ${code}.`));
-    });
-
-    child.stdin.write(trimmedPrompt);
-    child.stdin.end();
-  });
-}
-
-function assertOk(response, payload) {
-  if (response.ok) {
+async function waitForWindowToFinishLoading(mainWindow) {
+  if (!mainWindow.webContents.isLoadingMainFrame()) {
     return;
   }
 
-  const detail =
-    payload && typeof payload === "object"
-      ? JSON.stringify(payload)
-      : typeof payload === "string"
-        ? payload
-        : response.statusText;
-
-  throw new Error(`Gemini API ${response.status}: ${detail}`);
+  await new Promise((resolve) => {
+    mainWindow.webContents.once("did-finish-load", resolve);
+  });
 }
 
-async function startResumableUpload({ apiKey, mimeType, fileSize, displayName }) {
-  const response = await fetch("https://generativelanguage.googleapis.com/upload/v1beta/files", {
-    method: "POST",
-    headers: {
-      "x-goog-api-key": apiKey,
-      "X-Goog-Upload-Protocol": "resumable",
-      "X-Goog-Upload-Command": "start",
-      "X-Goog-Upload-Header-Content-Length": String(fileSize),
-      "X-Goog-Upload-Header-Content-Type": mimeType,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      file: {
-        display_name: displayName
-      }
-    })
+async function writeSmokeTestResult(payload) {
+  if (!smokeTestResultFile) {
+    return;
+  }
+
+  await writeFile(smokeTestResultFile, JSON.stringify(payload, null, 2), "utf8");
+}
+
+async function runPackagedSmokeTest({ mainWindow, runtime, buildConfig }) {
+  await writeSmokeTestResult({
+    ok: false,
+    phase: "entered"
+  });
+  await waitForWindowToFinishLoading(mainWindow);
+  await writeSmokeTestResult({
+    ok: false,
+    phase: "window-loaded"
   });
 
-  if (!response.ok) {
-    const payload = await response.text();
-    assertOk(response, payload);
-  }
+  const requiredBridgeMethods = [
+    "getConfig",
+    "getAppState",
+    "saveRendererState",
+    "appendAppEvent",
+    "getTrustedWebStatus",
+    "executeTrustedWeb",
+    "cancelTrustedWeb",
+    "getCodexStatus",
+    "listCodexModels",
+    "getUpstreamCapabilities",
+    "listUpstreamPlanModes",
+    "listUpstreamExtensions",
+    "refreshUpstreamCapabilities",
+    "onUpstreamCapabilitiesChanged",
+    "getVoiceStatus",
+    "getScreenCapturePermission",
+    "openScreenCaptureSettings",
+    "transcribeVoice",
+    "selectAttachments",
+    "prepareDroppedAttachments",
+    "releaseAttachments",
+    "getProposalRuntimeAvailability",
+    "listProposals",
+    "createProposalWorkspace",
+    "beginProposalIteration",
+    "completeProposalIteration",
+    "failProposalIteration",
+    "validateProposal",
+    "approveProposal",
+    "rejectProposal",
+    "applyProposal",
+    "destroyProposal",
+    "startProposalPreview",
+    "stopProposalPreview",
+    "restartProposalPreview",
+    "refreshProposalPreview",
+    "getImplementationRuntimeAvailability",
+    "listImplementationOperations",
+    "createImplementationOperation",
+    "startImplementationOperation",
+    "resolveImplementationConflict",
+    "cancelImplementationOperation",
+    "rollbackImplementationOperation",
+    "recoverImplementationOperation",
+    "onImplementationEvent",
+    "getGitContext",
+    "startCodexExecution",
+    "cancelCodexExecution",
+    "onCodexEvent",
+    "onCodexApprovalRequest",
+    "respondCodexApproval",
+    "runCodex",
+    "saveRecording",
+    "analyzeRecording",
+    "copyText",
+    "closeApp"
+  ];
 
-  const uploadUrl = response.headers.get("x-goog-upload-url");
-  if (!uploadUrl) {
-    throw new Error("No pude obtener la URL de subida resumable de Gemini.");
-  }
-
-  return uploadUrl;
-}
-
-async function uploadFileBytes({ uploadUrl, buffer }) {
-  const response = await fetch(uploadUrl, {
-    method: "POST",
-    headers: {
-      "Content-Length": String(buffer.byteLength),
-      "X-Goog-Upload-Offset": "0",
-      "X-Goog-Upload-Command": "upload, finalize"
-    },
-    body: buffer
-  });
-
-  const payload = await response.json().catch(() => null);
-  assertOk(response, payload);
-
-  if (!payload?.file?.uri || !payload?.file?.name) {
-    throw new Error("Gemini no devolvio la referencia del archivo subido.");
-  }
-
-  return payload.file;
-}
-
-async function waitForFileActive({ apiKey, fileName }) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}`, {
-      headers: {
-        "x-goog-api-key": apiKey
-      }
+  try {
+    await writeSmokeTestResult({
+      ok: false,
+      phase: "renderer-content-check"
     });
-
-    const payload = await response.json().catch(() => null);
-    assertOk(response, payload);
-
-    const state = typeof payload?.state === "string" ? payload.state : payload?.state?.name;
-
-    if (state === "ACTIVE") {
-      return payload;
+    const rendererShape = await mainWindow.webContents.executeJavaScript(
+      `(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return {
+          rootChildren: document.querySelector("#root")?.childElementCount ?? 0,
+          bodyLength: document.body.innerText.trim().length,
+          workspaceContextVisible: Boolean(document.querySelector(".workspace-context")),
+          idleDiagnosticsHidden: !document.querySelector(".workspace-work-panel")
+        };
+      })()`,
+      true
+    );
+    if (
+      rendererShape.rootChildren < 1 ||
+      rendererShape.bodyLength < 100 ||
+      !rendererShape.workspaceContextVisible ||
+      !rendererShape.idleDiagnosticsHidden
+    ) {
+      throw new Error(`El renderer empaquetado no presentó Workspace Experience: ${JSON.stringify(rendererShape)}`);
     }
 
-    if (state === "FAILED") {
-      throw new Error("Gemini marco el video como FAILED durante el procesamiento.");
+    await writeSmokeTestResult({
+      ok: false,
+      phase: "bridge-check"
+    });
+    const bridgeShape = await mainWindow.webContents.executeJavaScript(
+      `(() => {
+        const bridge = window.overlayBridge;
+        return {
+          available: Boolean(bridge),
+          methods: bridge
+            ? Object.keys(bridge).filter((key) => typeof bridge[key] === "function").sort()
+            : []
+        };
+      })()`,
+      true
+    );
+
+    if (!bridgeShape?.available) {
+      throw new Error("Preload no expuso window.overlayBridge dentro del artefacto empaquetado.");
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-  }
-
-  throw new Error("Gemini no termino de procesar el video dentro del tiempo esperado.");
-}
-
-function extractInteractionText(payload) {
-  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text.trim();
-  }
-
-  const fragments = [];
-  for (const step of payload?.steps ?? []) {
-    for (const part of step?.content ?? []) {
-      if (part?.type === "text" && typeof part.text === "string") {
-        fragments.push(part.text.trim());
-      }
+    const missingMethods = requiredBridgeMethods.filter((method) => !bridgeShape.methods.includes(method));
+    if (missingMethods.length) {
+      throw new Error(`Faltan métodos del bridge en preload: ${missingMethods.join(", ")}`);
     }
+
+    await writeSmokeTestResult({
+      ok: false,
+      phase: "config-check"
+    });
+    const config = await mainWindow.webContents.executeJavaScript("window.overlayBridge.getConfig()", true);
+    await writeSmokeTestResult({
+      ok: false,
+      phase: "renderer-status-check"
+    });
+    const rendererStatus = await mainWindow.webContents.executeJavaScript("window.overlayBridge.getCodexStatus()", true);
+    await writeSmokeTestResult({
+      ok: false,
+      phase: "app-state-check"
+    });
+    const appState = await mainWindow.webContents.executeJavaScript("window.overlayBridge.getAppState()", true);
+    await writeSmokeTestResult({
+      ok: false,
+      phase: "direct-status-check"
+    });
+    const directStatus = await runtime.codexAdapter.getStatus();
+
+    const payload = {
+        configLoaded: Boolean(config?.codex && config?.platform),
+        rendererShape,
+        bridgeMethods: bridgeShape.methods,
+        rendererStatusAvailable: typeof rendererStatus?.available === "boolean",
+        directStatusAvailable: typeof directStatus?.available === "boolean",
+        activeSessionId: appState?.session?.id ?? null
+      };
+
+    await writeSmokeTestResult({ ok: true, phase: "completed", payload });
+    console.log(`COCREATE_SMOKE_TEST_OK ${JSON.stringify(payload)}`);
+    mainWindow.destroy();
+    await runtime.codexAdapter.dispose();
+    app.exit(0);
+  } catch (error) {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    await writeSmokeTestResult({ ok: false, phase: "failed", error: message }).catch(() => undefined);
+    console.error(`COCREATE_SMOKE_TEST_ERROR ${message}`);
+    mainWindow.destroy();
+    await runtime.codexAdapter.dispose().catch(() => undefined);
+    app.exit(1);
   }
-
-  return fragments.filter(Boolean).join("\n\n").trim();
 }
 
-function buildAnalysisPrompt(userNotes) {
-  const noteBlock = userNotes?.trim()
-    ? `Contexto extra del usuario:\n${userNotes.trim()}`
-    : "Contexto extra del usuario:\nNo se proporciono contexto adicional.";
-
-  return [
-    "Analiza esta grabacion de pantalla como si fueras un operador senior que prepara instrucciones para OpenAI Codex.",
-    "Tu objetivo es convertir lo observado en prompts listos para pegar en Codex y ejecutar trabajo tecnico.",
-    "Responde en espanol.",
-    "Si faltan detalles, haz suposiciones prudentes y decláralas.",
-    "Usa exactamente esta estructura Markdown:",
-    "# Resumen",
-    "# Lo que parece querer el usuario",
-    "# Prompt principal para Codex",
-    "```text",
-    "PROMPT AQUI",
-    "```",
-    "# Prompt de seguimiento",
-    "```text",
-    "PROMPT AQUI",
-    "```",
-    "# Checklist de ejecucion",
-    "- item",
-    "# Riesgos o vacios",
-    "- item",
-    noteBlock
-  ].join("\n\n");
-}
-
-async function createInteraction({ apiKey, model, fileUri, mimeType, userNotes }) {
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-    method: "POST",
-    headers: {
-      "x-goog-api-key": apiKey,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          type: "video",
-          uri: fileUri,
-          mime_type: mimeType
-        },
-        {
-          type: "text",
-          text: buildAnalysisPrompt(userNotes)
-        }
-      ]
-    })
+async function bootstrap() {
+  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => callback({}), {
+    useSystemPicker: true
+  });
+  const approvalBroker = createApprovalBroker({ ipcMain, BrowserWindow });
+  const runtime = createRuntime({ requestApproval: approvalBroker.requestApproval });
+  const attachmentBroker = createAttachmentBroker({ ipcMain, dialog, browserWindow: BrowserWindow });
+  disposeAttachmentBroker = () => attachmentBroker.dispose();
+  disposeGitContextIpc = registerGitContextIpc({
+    ipcMain,
+    resolveCwd: async () => (await runtime.workspaceRuntime.getCodexExecutionContext()).rootPath ?? null
+  });
+  const upstreamCapabilitiesIpc = registerUpstreamCapabilitiesIpc({
+    ipcMain,
+    browserWindow: BrowserWindow,
+    adapter: runtime.upstreamStabilityAdapter
+  });
+  disposeUpstreamCapabilitiesIpc = () => upstreamCapabilitiesIpc.dispose();
+  disposeVoiceIpc = registerVoiceIpc({
+    ipcMain,
+    apiKey: process.env.OPENAI_API_KEY?.trim() ?? "",
+    model: process.env.OPENAI_TRANSCRIBE_MODEL ?? "gpt-4o-mini-transcribe"
+  });
+  disposeScreenSharingIpc = registerScreenSharingIpc({ ipcMain });
+  await runtime.proposalRuntime.initialize();
+  await runtime.implementationRuntime.initialize();
+  disposeProposalRuntimeIpc = registerProposalRuntimeIpc({
+    ipcMain,
+    browserWindow: BrowserWindow,
+    runtime: runtime.proposalRuntime,
+    resolveSourceRoot: async () => (await runtime.workspaceRuntime.getCodexExecutionContext()).rootPath ?? null
+  });
+  disposeImplementationRuntimeIpc = registerImplementationRuntimeIpc({
+    ipcMain,
+    browserWindow: BrowserWindow,
+    runtime: runtime.implementationRuntime
   });
 
-  const payload = await response.json().catch(() => null);
-  assertOk(response, payload);
+  const buildConfig = async () => {
+    const codexStatus = await runtime.codexAdapter.getStatus();
+    await runtime.foundationStore.recordCodexStatus(codexStatus);
 
-  const text = extractInteractionText(payload);
-  if (!text) {
-    throw new Error("Gemini respondio, pero no devolvio texto util para convertir en prompts.");
-  }
-
-  return text;
-}
-
-ipcMain.handle("app:get-config", async () => {
-  const outputDir = getAppVideoDir();
-  await mkdir(outputDir, { recursive: true });
-
-  return {
-    outputDir,
-    defaultGeminiModel,
-    platform: process.platform,
-    stateStorePath: getStateStorePath(),
-    featureFlags,
-    codex: await resolveCodexStatus()
-  };
-});
-
-ipcMain.handle("app-state:get", async () => {
-  const state = await loadPersistedState();
-  const session = ensureActiveSession(state);
-  await savePersistedState(state);
-  return {
-    state,
-    session,
-    featureFlags
-  };
-});
-
-ipcMain.handle("app-state:save-renderer", async (_event, payload) => {
-  const result = await updatePersistedState(async (state, session) => {
-    const title = payload?.title;
-    if (typeof title === "string" && title.trim()) {
-      session.title = title.trim().slice(0, 120);
-    }
-
-    session.renderer = {
-      ...session.renderer,
-      workbench: payload?.snapshot && typeof payload.snapshot === "object" ? payload.snapshot : null
+    return {
+      outputDir: getAppVideoDir(),
+      defaultGeminiModel,
+      workingDirectory: getRuntimeWorkingDirectory(),
+      appVersion: app.getVersion(),
+      runtimeVersion: process.versions.electron,
+      platform: process.platform,
+      stateStorePath: getAppStateStorePath(),
+      foundationStorePath: getFoundationStorePath(),
+      workspaceStorePath: getWorkspaceStorePath(),
+      identityStorePath: getIdentityStorePath(),
+      featureFlags: {
+        ...featureFlags,
+        ...resolveParityFeatureFlags({
+          environment: "desktop",
+          upstreamVersion: codexStatus.version,
+          compatible: codexStatus.compatible,
+          overrides: parityFeatureFlagOverrides
+        })
+      },
+      codex: codexStatus
     };
-    appendSessionEvent(session, {
-      type: "renderer.snapshot.saved",
-      source: "renderer",
-      payload: {
-        mode: payload?.snapshot?.activeMode ?? null
-      }
-    });
-    state.activeSessionId = session.id;
-  });
-
-  return {
-    ok: true,
-    sessionId: result.session?.id ?? null,
-    updatedAt: result.state.updatedAt
   };
-});
 
-ipcMain.handle("app-state:append-event", async (_event, payload) => {
-  const result = await updatePersistedState(async (_state, session) => {
-    appendSessionEvent(session, payload);
+  await runtime.identityRuntime.initialize({
+    platform: process.platform,
+    architecture: process.arch,
+    appVersion: app.getVersion(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    locale: Intl.DateTimeFormat().resolvedOptions().locale,
+    deviceName: `${process.platform}-${process.arch}`
+  });
+  const legacyAppState = await runtime.appStateStore.load();
+  const identityContext = await runtime.identityRuntime.getSnapshot();
+  await runtime.workspaceRuntime.initialize({
+    legacyAppState,
+    identityContext
   });
 
-  return {
-    ok: true,
-    sessionId: result.session?.id ?? null
-  };
-});
+  disposeAppIpc = registerAppIpcHandlers({
+    ipcMain,
+    app,
+    clipboard,
+    featureFlags,
+    getConfig: buildConfig,
+    appStateStore: runtime.appStateStore,
+    foundationStore: runtime.foundationStore,
+    analysisService: runtime.analysisService
+  });
 
-ipcMain.handle("codex:status", async () => resolveCodexStatus());
+  disposeWorkspaceIpc = registerWorkspaceIpcHandlers({
+    ipcMain,
+    dialog,
+    workspaceRuntime: runtime.workspaceRuntime,
+    identityRuntime: runtime.identityRuntime
+  });
+  disposeIdentityIpc = registerIdentityIpcHandlers({
+    ipcMain,
+    identityRuntime: runtime.identityRuntime
+  });
+  disposeTrustedWebIpc = registerTrustedWebIpcHandlers({
+    ipcMain,
+    providerRuntime: runtime.trustedWebProviderRuntime,
+    onExecutionEvent: async (webEvent) => {
+      await runtime.workspaceRuntime
+        .recordWebExecution(webEvent, await runtime.identityRuntime.getSnapshot())
+        .catch(() => undefined);
+    }
+  });
 
-ipcMain.handle("codex:run", async (_event, payload) => {
-  const result = await runCodexPrompt(payload?.prompt ?? "");
-  await updatePersistedState(async (_state, session) => {
-    appendSessionEvent(session, {
-      type: "codex.run.completed",
-      source: "main",
-      payload: {
-        ok: result.ok,
-        promptPreview: typeof payload?.prompt === "string" ? payload.prompt.slice(0, 280) : "",
-        outputPreview: typeof result.output === "string" ? result.output.slice(0, 280) : ""
-      }
+  ipcMain.handle("codex:run", async (_event, payload) => {
+    const workspaceContext = await runtime.workspaceRuntime.getCodexExecutionContext();
+    const result = await collectExecutionOutput(runtime.codexAdapter, {
+      prompt: payload?.prompt ?? "",
+      cwd: workspaceContext.rootPath ?? getRuntimeWorkingDirectory(),
+      origin: "legacy-bridge",
+      metadata: { workspaceContext }
     });
-  });
-  return result;
-});
 
-ipcMain.handle("recording:save", async (_event, payload) => {
-  const outputDir = getAppVideoDir();
-  await mkdir(outputDir, { recursive: true });
-
-  const preferredName = payload?.suggestedName ? sanitizeFileName(payload.suggestedName) : "";
-  const extension =
-    payload?.mimeType === "video/mp4" ? "mp4" : payload?.mimeType?.includes("webm") ? "webm" : "bin";
-  const fileName = preferredName
-    ? `${preferredName}.${extension}`
-    : buildRecordingName();
-  const filePath = path.join(outputDir, fileName);
-
-  const buffer = Buffer.from(payload.buffer);
-  await writeFile(filePath, buffer);
-
-  await updatePersistedState(async (_state, session) => {
-    appendSessionEvent(session, {
-      type: "recording.saved",
-      source: "main",
-      payload: {
-        filePath,
-        fileSize: buffer.byteLength,
-        mimeType: payload?.mimeType ?? null
-      }
+    await runtime.appStateStore.update(async (_state, session) => {
+      runtime.appStateStore.appendSessionEvent(session, {
+        type: "codex.run.completed",
+        source: "main",
+        payload: {
+          ok: result.ok,
+          promptPreview: typeof payload?.prompt === "string" ? payload.prompt.slice(0, 280) : "",
+          outputPreview: typeof result.output === "string" ? result.output.slice(0, 280) : ""
+        }
+      });
     });
+
+    return result;
   });
 
-  return {
-    filePath,
-    fileSize: buffer.byteLength
-  };
-});
+  disposeCodexIpc = registerCodexIpcHandlers({
+    ipcMain,
+    codexAdapter: runtime.codexAdapter,
+    resolveExecutionContext: () => runtime.workspaceRuntime.getCodexExecutionContext(),
+    resolveAttachments: (tokens, ownerWindowId) => attachmentBroker.resolve(tokens, ownerWindowId),
+    resolveSkills: (tokens, ownerWindowId) => upstreamCapabilitiesIpc.resolveSkillInputs(tokens, ownerWindowId),
+    resolveProposalWorkspace: (proposalWorkspaceId, ownerWindowId) =>
+      runtime.proposalRuntime.resolveWorkspace(proposalWorkspaceId, ownerWindowId),
+    onExecutionEvent: async (executionEvent, payload) => {
+      const proposalExecution = payload?.metadata?.workspaceContext?.proposalWorkspace === true;
+      if (executionEvent.type === "codex.upstream") {
+        if (!proposalExecution) {
+          await runtime.workspaceRuntime
+            .recordCodexUpstreamEvent(executionEvent.event, await runtime.identityRuntime.getSnapshot())
+            .catch(() => undefined);
+        }
+        return;
+      }
+      if (!proposalExecution) {
+        await runtime.workspaceRuntime
+          .recordExecutionEvent(executionEvent, payload, await runtime.identityRuntime.getSnapshot())
+          .catch(() => undefined);
+      }
+      if (executionEvent.type === "execution.started") {
+        await runtime.foundationStore.recordExecution({
+          executionId: executionEvent.executionId,
+          status: executionEvent.type,
+          binary: codexBinary,
+          version: "",
+          promptPreview: executionEvent.promptPreview,
+          outputPreview: "",
+          startedAt: executionEvent.timestamp,
+          finishedAt: null
+        });
+        return;
+      }
 
-ipcMain.handle("analysis:run", async (_event, payload) => {
-  const apiKey = payload?.apiKey?.trim();
-  if (!apiKey) {
-    throw new Error("Falta la API key de Gemini.");
+      if (
+        executionEvent.type === "execution.completed" ||
+        executionEvent.type === "execution.cancelled" ||
+        executionEvent.type === "execution.failed"
+      ) {
+        const status = await runtime.codexAdapter.getStatus();
+        await runtime.foundationStore.recordCodexStatus(status);
+        await runtime.foundationStore.recordExecution({
+          executionId: executionEvent.executionId,
+          status: executionEvent.type,
+          binary: status.binary,
+          version: status.version ?? "",
+          promptPreview: typeof payload?.prompt === "string" ? payload.prompt.slice(0, 280) : "",
+          outputPreview:
+            executionEvent.type === "execution.completed"
+              ? executionEvent.output.slice(0, 280)
+              : executionEvent.type === "execution.cancelled"
+                ? executionEvent.output?.slice(0, 280) ?? ""
+                : executionEvent.error.safeMessage,
+          startedAt: executionEvent.timestamp,
+          finishedAt: executionEvent.timestamp
+        });
+        await runtime.appStateStore.update(async (_state, session) => {
+          runtime.appStateStore.appendSessionEvent(session, {
+            type: `codex.${executionEvent.type.replace("execution.", "")}`,
+            source: "main",
+            payload: {
+              executionId: executionEvent.executionId,
+              promptPreview: typeof payload?.prompt === "string" ? payload.prompt.slice(0, 280) : "",
+              status: executionEvent.type,
+              outputPreview:
+                executionEvent.type === "execution.completed"
+                  ? executionEvent.output.slice(0, 280)
+                  : executionEvent.type === "execution.cancelled"
+                    ? executionEvent.output?.slice(0, 280) ?? ""
+                    : executionEvent.error.safeMessage
+            }
+          });
+        });
+      }
+    },
+    onStatusResolved: async (status) => {
+      await runtime.foundationStore.recordCodexStatus(status);
+    }
+  });
+
+  const mainWindow = await createMainWindow({
+    rendererUrl,
+    distIndexPath: path.join(rootDir, "dist", "index.html"),
+    preloadPath: path.join(__dirname, "preload.cjs"),
+    show: !isSmokeTest
+  });
+
+  if (isSmokeTest) {
+    await runPackagedSmokeTest({
+      mainWindow,
+      runtime,
+      buildConfig
+    });
+    return;
   }
 
-  const filePath = payload?.filePath;
-  const mimeType = payload?.mimeType ?? "video/webm";
-  const model = payload?.model?.trim() || defaultGeminiModel;
-
-  if (!filePath) {
-    throw new Error("No hay video guardado para analizar.");
-  }
-
-  const fileBuffer = await readFile(filePath);
-  const displayName = path.basename(filePath);
-  const uploadUrl = await startResumableUpload({
-    apiKey,
-    mimeType,
-    fileSize: fileBuffer.byteLength,
-    displayName
-  });
-  const file = await uploadFileBytes({
-    uploadUrl,
-    buffer: fileBuffer
-  });
-  await waitForFileActive({
-    apiKey,
-    fileName: file.name
+  mainWindow.on("closed", async () => {
+    await runtime.codexAdapter.dispose();
   });
 
-  const output = await createInteraction({
-    apiKey,
-    model,
-    fileUri: file.uri,
-    mimeType,
-    userNotes: payload?.notes ?? ""
+  app.on("before-quit", async () => {
+    disposeCodexIpc();
+    disposeAppIpc();
+    disposeWorkspaceIpc();
+    disposeIdentityIpc();
+    disposeTrustedWebIpc();
+    disposeAttachmentBroker();
+    disposeGitContextIpc();
+    disposeUpstreamCapabilitiesIpc();
+    disposeVoiceIpc();
+    disposeProposalRuntimeIpc();
+    disposeScreenSharingIpc();
+    disposeImplementationRuntimeIpc();
+    approvalBroker.dispose();
+    ipcMain.removeHandler("codex:run");
+    await runtime.identityRuntime.dispose();
+    await runtime.workspaceRuntime.dispose();
+    await runtime.proposalRuntime.dispose();
+    await runtime.implementationRuntime.dispose();
+    await runtime.codexAdapter.dispose();
   });
+}
 
-  await updatePersistedState(async (_state, session) => {
-    appendSessionEvent(session, {
-      type: "analysis.completed",
-      source: "main",
-      payload: {
-        model,
-        filePath,
-        fileName: file.name,
-        promptPreview: output.slice(0, 280)
-      }
-    });
-  });
-
-  return {
-    model,
-    fileUri: file.uri,
-    fileName: file.name,
-    output
-  };
-});
-
-ipcMain.handle("clipboard:write-text", async (_event, value) => {
-  clipboard.writeText(typeof value === "string" ? value : "");
-  return { ok: true };
-});
-
-ipcMain.handle("app:close", () => {
-  app.quit();
-});
-
-app.whenReady().then(createMainWindow);
+app.whenReady().then(bootstrap);
 
 app.on("window-all-closed", () => {
   app.quit();

@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".test-build",
+    "rootDir": ".",
+    "allowJs": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "jsx": "react-jsx",
+    "types": ["node"]
+  },
+  "include": [
+    "tests/**/*.ts",
+    "src/app/**/*.ts",
+    "src/infrastructure/codex/**/*.ts",
+    "infrastructure/**/*.js",
+    "src/vite-env.d.ts",
+    "shared/**/*.d.ts",
+    "shared/**/*.js"
+  ]
+}

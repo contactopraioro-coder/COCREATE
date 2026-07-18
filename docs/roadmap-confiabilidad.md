@@ -2,6 +2,16 @@
 
 Este documento aterriza los huecos actuales del proyecto sin cambiar la interfaz existente. La meta es volverlo confiable para desarrollo, pruebas, despliegue y sesiones en vivo.
 
+## Estado vigente — 17 de julio de 2026
+
+La Foundation, Workspace Runtime, Provider Runtime, Codex Integration, Feature Parity y Product UX Polish ya forman parte de la base cerrada de CoCreate.
+
+Live Coding Foundation, Visual Collaboration, Proposal Runtime, Live Coding Experience Alignment y Live Implementation Runtime ya están cerrados. CoCreate dispone de captura autorizada, Current/Proposal/Split/Overlay, selección visual, workspaces temporales aislados, preview independiente, iteraciones y un ciclo post-aprobación persistente con revisión inmutable, conflictos, checkpoint, Apply incremental, Validation, Refresh, recovery y rollback seguro.
+
+La siguiente fase recomendada es Assistant Intelligence Runtime. No incluye automatizar commits, pushes, pull requests o deploys, y no debe relajar aprobación explícita, consentimiento de captura, conflictos, Validation ni rollback.
+
+> Las prioridades y fases que aparecen a continuación se conservan como registro histórico del roadmap inicial. Cualquier conflicto se resuelve a favor del estado vigente y de la arquitectura upstream actual.
+
 ## Estado actual verificado
 
 - El repositorio ya tiene remoto GitHub configurado: `origin -> contactopraioro-coder/caleidoscopio-overlay`.
@@ -250,3 +260,58 @@ Estas son las que se pueden avanzar sin afectar estetica ni usabilidad:
 - semiautomatica con aprobacion
 - solo sugerencias hasta confirmar
 4. Si el panel izquierdo mostrara stream en vivo o snapshot estable del "antes".
+
+## Prompt #13 — Live Coding: Visual Collaboration
+
+Estado: cerrado el 17 de julio de 2026.
+
+Implementado:
+
+- layout Current / Proposed dentro de Live;
+- modos Actual, Dividida y Superpuesta;
+- preview seguro por URL local o web;
+- selección visual nombrada sin selectores ni inspección DOM cross-origin;
+- puntero, flecha, círculo y rectángulo efímeros;
+- contexto visual asociado a texto y voz;
+- historial y decisiones de propuestas;
+- aprobación de ideas separada de Working Changes;
+- persistencia Desktop/Web de sesión, selección, propuestas, timeline y layout;
+- experiencia Web reducida sin superficies locales ficticias;
+- gate Desktop real y browser gate responsive.
+
+## Prompt #14 — Live Coding: Proposal Runtime
+
+Estado: cerrado el 17 de julio de 2026.
+
+Implementado:
+
+- Temporary Copy-on-Write Workspace aislado y owner-scoped;
+- Codex App Server con `cwd` y writable root de la Proposal;
+- preview independiente con start, stop, restart, refresh y cierre keep-alive acotado;
+- estados Draft, Preparing, Applying, Running, Ready, Failed, Rejected, Approved, Applied y Destroyed;
+- iteraciones encadenadas de texto o voz sin modificar Current;
+- diff, componentes, validaciones y rechazo honesto de propuestas vacías;
+- aprobación separada de Apply;
+- copia transaccional de archivos modificados y rollback automático;
+- restore, limpieza de workspaces abandonados y estado Web honesto;
+- gate Desktop real empaquetado y gate Web responsive.
+
+Siguiente fase recomendada: Live Implementation. Debe convertir propuestas aprobadas en flujos guiados de implementación sin relajar Apply, Validation o aprobación explícita.
+
+## Prompt #14.1 — Live Coding Experience Alignment
+
+Estado: cerrado el 17 de julio de 2026.
+
+Implementado:
+
+- Live transforma el área completa de la conversación sin alterar el sidebar;
+- captura real y explícita de pantalla, ventana o pestaña en Web y Desktop;
+- permiso recuperable de Screen Recording en macOS y cleanup determinista;
+- Current con stream, encuadre, pausa, stop, fullscreen, selección, pointer y anotaciones;
+- Proposal Runtime integrado con texto, voz, historial, undo y descarte;
+- acción única `Aprobar y desarrollar` con retorno a Chat antes de Apply;
+- nueva tarea inmediata, sin formulario ni Project obligatorio;
+- Projects y Tasks separados con asociación posterior;
+- restauración de layout y borrador sin reiniciar captura.
+
+Siguiente fase recomendada: Live Implementation.

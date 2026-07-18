@@ -16,5 +16,5 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src", "overlay-src", "server"]
+  "include": ["src", "overlay-src", "server", "api", "shared/**/*.d.ts", "vite.config.ts"]
 }

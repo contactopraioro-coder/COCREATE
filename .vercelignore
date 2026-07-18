@@ -1,0 +1,10 @@
+release/
+node_modules/
+dist/
+overlay-dist/
+.test-build/
+data/
+docs/
+tests/
+.env*
+.DS_Store

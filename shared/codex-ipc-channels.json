@@ -1,0 +1,7 @@
+{
+  "getStatus": "cocreate:codex:get-status",
+  "listModels": "cocreate:codex:list-models",
+  "execute": "cocreate:codex:execute",
+  "cancel": "cocreate:codex:cancel",
+  "events": "cocreate:codex:events"
+}

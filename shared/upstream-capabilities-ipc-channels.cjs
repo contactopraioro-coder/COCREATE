@@ -1,0 +1,7 @@
+module.exports = Object.freeze({
+  snapshot: "cocreate:upstream-capabilities:snapshot",
+  plans: "cocreate:upstream-capabilities:plans",
+  extensions: "cocreate:upstream-capabilities:extensions",
+  refresh: "cocreate:upstream-capabilities:refresh",
+  changed: "cocreate:upstream-capabilities:changed"
+});

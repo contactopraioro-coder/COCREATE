@@ -1,8 +1,14 @@
+import type { CodexStatus as SharedCodexStatus } from "../shared/codex-contracts";
+
 export interface AppConfig {
   outputDir: string;
   defaultGeminiModel: string;
+  workingDirectory?: string;
+  appVersion?: string;
+  runtimeVersion?: string;
   platform: string;
   stateStorePath: string;
+  foundationStorePath?: string;
   featureFlags: {
     persistentSessions: boolean;
     liveCompare: boolean;
@@ -12,15 +18,7 @@ export interface AppConfig {
   codex: CodexStatus;
 }
 
-export interface CodexStatus {
-  available: boolean;
-  binary: string;
-  version: string | null;
-  license: string;
-  source: string;
-  mode: string;
-  error?: string;
-}
+export type CodexStatus = SharedCodexStatus;
 
 export interface SaveRecordingResult {
   filePath: string;
@@ -29,9 +27,10 @@ export interface SaveRecordingResult {
 
 export interface AnalysisResult {
   model: string;
-  fileUri: string;
   fileName: string;
   output: string;
+  provider?: string;
+  requestId?: string;
 }
 
 export type RecorderPhase =

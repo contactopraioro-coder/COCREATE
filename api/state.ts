@@ -102,7 +102,11 @@ function deriveMemorySeed(snapshot: any) {
   const messages = Array.isArray(snapshot.messages)
     ? snapshot.messages
         .slice(-6)
-        .map((message) => (typeof message?.body === "string" ? message.body.trim() : ""))
+        .map((message: unknown) =>
+          typeof (message as { body?: unknown })?.body === "string"
+            ? (message as { body: string }).body.trim()
+            : ""
+        )
         .filter(Boolean)
     : [];
 

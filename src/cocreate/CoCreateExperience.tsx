@@ -32,6 +32,14 @@ import {
   Wand2
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type {
+  CodexExecutionHandle,
+  CodexExecutionEvent,
+  CodexStatus
+} from "../../shared/codex-contracts";
+import { CodexExecutionService } from "../app/services/codex-execution-service";
+import { CodexStatusService } from "../app/services/codex-status-service";
+import { createCodexAdapter } from "../infrastructure/codex/create-codex-adapter";
 import "./cocreate.css";
 import { getWebClientId, loadWebState, saveWebState } from "./web-persistence";
 
@@ -40,19 +48,12 @@ type RecorderPhase = "idle" | "requesting" | "recording" | "stopping" | "ready" 
 type ActiveMode = "chat" | "live" | "cocoding";
 type MessageRole = "assistant" | "user" | "system";
 
-type CodexStatus = {
-  available: boolean;
-  binary: string;
-  version: string | null;
-  license: string;
-  source: string;
-  mode: string;
-  error?: string;
-};
-
 type AppConfig = {
   outputDir: string;
   defaultGeminiModel: string;
+  workingDirectory?: string;
+  appVersion?: string;
+  runtimeVersion?: string;
   platform: string;
   stateStorePath: string;
   featureFlags: FeatureFlags;
@@ -66,9 +67,10 @@ type SaveRecordingResult = {
 
 type AnalysisResult = {
   model: string;
-  fileUri: string;
   fileName: string;
   output: string;
+  provider?: string;
+  requestId?: string;
 };
 
 type FeatureFlags = {
@@ -246,7 +248,9 @@ const readSnapshot = (value: unknown): PersistedWorkbenchSnapshot | null => {
     return null;
   }
 
-  const candidate = value as Partial<PersistedWorkbenchSnapshot>;
+  const candidate = value as Partial<PersistedWorkbenchSnapshot> & {
+    messages?: unknown[];
+  };
   const messagesByThread =
     candidate.messagesByThread && typeof candidate.messagesByThread === "object"
       ? Object.entries(candidate.messagesByThread).reduce<ThreadMessages>((accumulator, [threadId, messages]) => {
@@ -317,6 +321,13 @@ export function CoCreateExperience() {
   const hasHydratedRef = useRef(false);
   const persistTimerRef = useRef<number | null>(null);
   const clientIdRef = useRef("");
+  const codexAdapterRef = useRef<ReturnType<typeof createCodexAdapter> | null>(null);
+  if (!codexAdapterRef.current) {
+    codexAdapterRef.current = createCodexAdapter();
+  }
+  const codexExecutionServiceRef = useRef(new CodexExecutionService(codexAdapterRef.current));
+  const codexStatusServiceRef = useRef(new CodexStatusService(codexAdapterRef.current));
+  const activeExecutionRef = useRef<CodexExecutionHandle | null>(null);
 
   const [theme, setTheme] = useState<ThemeMode>("dark");
   const [activeMode, setActiveMode] = useState<ActiveMode>("chat");
@@ -335,7 +346,6 @@ export function CoCreateExperience() {
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [phase, setPhase] = useState<RecorderPhase>("idle");
   const [status, setStatus] = useState("Listo para crear.");
-  const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gemini-3.5-flash");
   const [notes, setNotes] = useState(defaultNotes);
   const [recordingName, setRecordingName] = useState("cocreate-live-coding");
@@ -349,7 +359,7 @@ export function CoCreateExperience() {
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? threads[0];
   const messages = messagesByThread[activeThreadId] ?? defaultMessages;
   const isRecording = phase === "recording";
-  const canAnalyze = Boolean(savedRecording?.filePath && apiKey.trim() && phase !== "analyzing");
+  const canAnalyze = Boolean(savedRecording?.filePath && phase !== "analyzing");
   const codexReady = Boolean(codexStatus?.available);
 
   useEffect(() => {
@@ -450,13 +460,14 @@ export function CoCreateExperience() {
   }, []);
 
   useEffect(() => {
-    const storedApiKey = window.localStorage.getItem("caleidoscopio-gemini-api-key");
-    if (storedApiKey) setApiKey(storedApiKey);
+    return () => {
+      void codexExecutionServiceRef.current.dispose();
+    };
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("caleidoscopio-gemini-api-key", apiKey);
-  }, [apiKey]);
+    window.localStorage.removeItem("caleidoscopio-gemini-api-key");
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -571,6 +582,28 @@ export function CoCreateExperience() {
     }));
   };
 
+  const appendMessageToThread = (threadId: string, role: MessageRole, body: string, id = createId()) => {
+    setMessagesByThread((current) => ({
+      ...current,
+      [threadId]: [...(current[threadId] ?? []), { id, role, body }]
+    }));
+    return id;
+  };
+
+  const replaceMessageBody = (threadId: string, messageId: string, body: string) => {
+    setMessagesByThread((current) => ({
+      ...current,
+      [threadId]: (current[threadId] ?? []).map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              body
+            }
+          : message
+      )
+    }));
+  };
+
   const createThread = () => {
     const nextId = createId();
     const next: Thread = {
@@ -611,27 +644,24 @@ export function CoCreateExperience() {
   };
 
   const refreshCodexStatus = async () => {
-    const next = await window.overlayBridge?.getCodexStatus();
-    if (next) {
+    try {
+      const next = await codexStatusServiceRef.current.refreshStatus();
       setCodexStatus(next);
-      setStatus(next.available ? "Codex CLI detectado." : "Codex CLI no está disponible en PATH.");
+      setStatus(next.available ? "Codex CLI detectado." : next.error ?? "Codex CLI no está disponible en PATH.");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "No pude consultar el estado de Codex.";
+      setError(message);
+      setStatus("No pude consultar el estado de Codex.");
     }
   };
 
   const analyzeSavedRecording = async (saved: SaveRecordingResult, mimeType: string) => {
-    if (!apiKey.trim()) {
-      setStatus("Captura lista. Agrega la API key para analizarla con Gemini.");
-      appendMessage("system", "Live Coding guardó la captura. Falta API key de Gemini para generar el prompt.");
-      return;
-    }
-
     setPhase("analyzing");
     setStatus("Analizando captura con Gemini.");
     setError("");
 
     try {
       const result = await window.overlayBridge?.analyzeRecording({
-        apiKey,
         model,
         notes,
         filePath: saved.filePath,
@@ -881,19 +911,38 @@ export function CoCreateExperience() {
     }
   };
 
+  const cancelPromptExecution = async () => {
+    const activeExecution = activeExecutionRef.current;
+    if (!activeExecution) {
+      return;
+    }
+
+    setStatus("Cancelando ejecución de Codex.");
+    await codexExecutionServiceRef.current.cancelExecution(activeExecution.executionId, "user-requested");
+  };
+
   const sendPrompt = async () => {
+    if (isRunningCodex) {
+      await cancelPromptExecution();
+      return;
+    }
+
     const text = prompt.trim();
     if (!text) return;
+    const targetThreadId = activeThreadId;
+    const assistantMessageId = createId();
+    let streamedOutput = "";
 
     appendMessage("user", text);
+    appendMessageToThread(targetThreadId, "assistant", "", assistantMessageId);
     appendEvent("prompt.submitted", {
-      threadId: activeThreadId,
+      threadId: targetThreadId,
       activeMode,
       promptPreview: text.slice(0, 280)
     });
     setThreads((current) =>
       current.map((thread) =>
-        thread.id === activeThreadId
+        thread.id === targetThreadId
           ? {
               ...thread,
               title: thread.title === "Nuevo chat" ? text.slice(0, 36) : thread.title,
@@ -908,42 +957,92 @@ export function CoCreateExperience() {
     window.overlayBridge?.copyText(text);
 
     setIsRunningCodex(true);
-    setStatus(window.overlayBridge?.runCodex ? "Codex está ejecutando el prompt." : "CoCreate Web está respondiendo.");
+    setStatus(window.overlayBridge ? "Codex está ejecutando el prompt." : "CoCreate Web está respondiendo.");
 
     try {
-      const result = window.overlayBridge?.runCodex
-        ? await window.overlayBridge.runCodex({ prompt: text })
-        : await fetch("/api/chat", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              prompt: text,
-              history: messages,
-              clientId: clientIdRef.current
-            })
-          }).then(async (response) => {
-            const payload = await response.json().catch(() => null);
-            if (!response.ok) {
-              throw new Error(payload?.error ?? "No pude responder desde CoCreate Web.");
-            }
-            return payload;
-          });
-      appendMessage("assistant", result.output);
-      setStatus(window.overlayBridge?.runCodex ? "Codex terminó la ejecución." : "CoCreate Web respondió.");
-      appendEvent("codex.completed", {
-        ok: result.ok,
-        outputPreview: result.output.slice(0, 280)
-      });
-      await refreshCodexStatus();
+      const handle = await codexExecutionServiceRef.current.executePrompt(
+        {
+          prompt: text,
+          origin: window.overlayBridge ? "desktop-renderer" : "web-renderer",
+          metadata: {
+            clientId: clientIdRef.current,
+            history: messages
+          }
+        },
+        (event: CodexExecutionEvent) => {
+          switch (event.type) {
+            case "execution.started":
+              setStatus(window.overlayBridge ? "Codex está ejecutando el prompt." : "CoCreate Web está respondiendo.");
+              break;
+            case "execution.output":
+              streamedOutput += event.chunk;
+              replaceMessageBody(targetThreadId, assistantMessageId, streamedOutput.trimStart());
+              break;
+            case "execution.progress":
+              if (event.message.trim()) {
+                setStatus(event.message.trim());
+              }
+              break;
+            case "execution.completed":
+              replaceMessageBody(targetThreadId, assistantMessageId, event.output);
+              setStatus(window.overlayBridge ? "Codex terminó la ejecución." : "CoCreate Web respondió.");
+              break;
+            case "execution.cancelled":
+              replaceMessageBody(
+                targetThreadId,
+                assistantMessageId,
+                streamedOutput.trim() || "Ejecución cancelada por el usuario."
+              );
+              setStatus("Ejecución cancelada.");
+              break;
+            case "execution.failed":
+              replaceMessageBody(
+                targetThreadId,
+                assistantMessageId,
+                streamedOutput.trim() || event.error.safeMessage
+              );
+              setError(event.error.safeMessage);
+              setStatus("Codex no pudo completar la ejecución.");
+              break;
+            case "codex.statusChanged":
+              setCodexStatus(event.status);
+              break;
+          }
+        }
+      );
+
+      activeExecutionRef.current = handle;
+      const terminalEvent = await handle.completed;
+
+      if (terminalEvent.type === "execution.completed") {
+        appendEvent("codex.completed", {
+          ok: true,
+          executionId: terminalEvent.executionId,
+          outputPreview: terminalEvent.output.slice(0, 280)
+        });
+      } else if (terminalEvent.type === "execution.cancelled") {
+        appendEvent("codex.cancelled", {
+          executionId: terminalEvent.executionId,
+          reason: terminalEvent.reason ?? "user-requested"
+        });
+      } else {
+        appendEvent("codex.failed", {
+          executionId: terminalEvent.executionId,
+          message: terminalEvent.error.safeMessage
+        });
+      }
+
+      if (window.overlayBridge) {
+        await refreshCodexStatus();
+      }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Codex no pudo ejecutar el prompt.";
       setError(message);
-      appendMessage("assistant", message);
+      replaceMessageBody(targetThreadId, assistantMessageId, message);
       setStatus("Codex no pudo completar la ejecución.");
       appendEvent("codex.failed", { message });
     } finally {
+      activeExecutionRef.current = null;
       setIsRunningCodex(false);
     }
   };
@@ -1204,8 +1303,8 @@ export function CoCreateExperience() {
                 {isRecording ? <Square size={16} /> : <Share2 size={16} />}
                 {isRecording ? "Stop Live" : "Live Coding"}
               </button>
-              <button className="send-button" type="button" onClick={sendPrompt} title="Enviar" disabled={isRunningCodex}>
-                {isRunningCodex ? <Sparkles size={17} /> : <Send size={17} />}
+              <button className="send-button" type="button" onClick={sendPrompt} title={isRunningCodex ? "Cancelar" : "Enviar"}>
+                {isRunningCodex ? <Square size={17} /> : <Send size={17} />}
               </button>
             </div>
           </div>
@@ -1232,15 +1331,6 @@ export function CoCreateExperience() {
               <span>Modelo</span>
               <strong>{model}</strong>
             </div>
-            <label>
-              Gemini API key
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
-                placeholder="AIza..."
-              />
-            </label>
             <label>
               Modelo
               <input value={model} onChange={(event) => setModel(event.target.value)} />

@@ -62,6 +62,28 @@ SUPABASE_SERVICE_ROLE_KEY=...
 npm run build
 ```
 
+## Build Desktop
+
+Para verificar el artefacto desktop sin generar instaladores:
+
+```bash
+npm run build:desktop
+npm run smoke:desktop
+```
+
+Esto genera una app `.app` desempaquetada dentro de `release/`, valida que `app.asar` incluya `shared/**/*` y arranca el binario empaquetado en modo smoke para comprobar:
+
+- inicio de Electron;
+- carga del `preload`;
+- disponibilidad de `window.overlayBridge`;
+- resolución de `CodexAdapter` e IPC básico.
+
+Para generar el paquete desktop distribuible en macOS:
+
+```bash
+npm run dist:mac
+```
+
 ## Deploy Web
 
 La experiencia web desplegable en hosting usa solo el renderer Vite principal.
@@ -70,6 +92,19 @@ La experiencia web desplegable en hosting usa solo el renderer Vite principal.
 - Render Static Site: `npm ci && npm run build:site` con publish path `dist`
 
 La parte Electron sigue siendo local de escritorio y no se despliega como app nativa en Vercel ni Render.
+
+## Packaging Desktop
+
+La app de escritorio depende de módulos compartidos en `shared/` porque allí viven los contratos tipados, el runner unificado y la definición del IPC de Codex usada tanto por `electron/main.mjs` como por `electron/preload.cjs`.
+
+Por eso el empaquetado incluye explícitamente:
+
+- `electron/**/*`
+- `shared/**/*`
+- `dist/**/*`
+- `overlay-dist/**/*`
+
+Si `shared/**/*` desaparece del artefacto, el binario empaquetado puede compilar pero fallará al arrancar por imports faltantes.
 
 Para que la experiencia web responda bien en Vercel:
 

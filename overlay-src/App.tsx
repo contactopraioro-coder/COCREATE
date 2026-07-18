@@ -21,6 +21,8 @@ import {
 } from "lucide-react";
 import { defaultNotes } from "./mock";
 import type { AnalysisResult, AppConfig, CodexStatus, RecorderPhase, SaveRecordingResult } from "./types";
+import { CodexStatusService } from "../src/app/services/codex-status-service";
+import { createCodexAdapter } from "../src/infrastructure/codex/create-codex-adapter";
 
 const chats = ["Main", "Caleidoscopio", "Group", "Project"];
 const branches = ["main", "ui-shell", "codex-upstream"];
@@ -45,11 +47,15 @@ function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
+  const codexAdapterRef = useRef<ReturnType<typeof createCodexAdapter> | null>(null);
+  if (!codexAdapterRef.current) {
+    codexAdapterRef.current = createCodexAdapter();
+  }
+  const codexStatusServiceRef = useRef(new CodexStatusService(codexAdapterRef.current));
 
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [phase, setPhase] = useState<RecorderPhase>("idle");
-  const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gemini-3.5-flash");
   const [notes, setNotes] = useState(defaultNotes);
   const [status, setStatus] = useState("CoCreate listo. Conecta Codex upstream o captura contexto.");
@@ -65,6 +71,12 @@ function App() {
   );
 
   useEffect(() => {
+    return () => {
+      void codexAdapterRef.current?.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
     window.overlayBridge
       ?.getConfig()
       .then((payload) => {
@@ -78,13 +90,8 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const storedApiKey = window.localStorage.getItem("caleidoscopio-gemini-api-key");
-    if (storedApiKey) setApiKey(storedApiKey);
+    window.localStorage.removeItem("caleidoscopio-gemini-api-key");
   }, []);
-
-  useEffect(() => {
-    window.localStorage.setItem("caleidoscopio-gemini-api-key", apiKey);
-  }, [apiKey]);
 
   useEffect(() => {
     return () => {
@@ -94,11 +101,11 @@ function App() {
   }, []);
 
   const isRecording = phase === "recording";
-  const canAnalyze = Boolean(savedRecording?.filePath && apiKey.trim() && phase !== "analyzing");
+  const canAnalyze = Boolean(savedRecording?.filePath && phase !== "analyzing");
   const upstreamReady = Boolean(codexStatus?.available);
 
   const refreshCodexStatus = async () => {
-    const next = await window.overlayBridge?.getCodexStatus();
+    const next = await codexStatusServiceRef.current.refreshStatus();
     if (next) setCodexStatus(next);
   };
 
@@ -190,7 +197,6 @@ function App() {
 
     try {
       const result = await window.overlayBridge?.analyzeRecording({
-        apiKey,
         model,
         notes,
         filePath: savedRecording.filePath,
@@ -410,15 +416,6 @@ function App() {
                 <h2>Model</h2>
               </div>
             </div>
-            <label>
-              API key
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
-                placeholder="AIza..."
-              />
-            </label>
             <label>
               Modelo
               <input value={model} onChange={(event) => setModel(event.target.value)} />
