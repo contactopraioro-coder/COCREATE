@@ -12,6 +12,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Paperclip,
+  Play,
   Plus,
   Search,
   Send,
@@ -45,6 +46,8 @@ import { WorkspaceWorkPanel } from "./workspace-experience/WorkspaceWorkPanel";
 import { FeatureParityService, type FeatureRoute } from "../app/services/feature-parity-service";
 import { NavigationService } from "../app/services/navigation-service";
 import { PrimaryNavigation } from "./feature-parity/PrimaryNavigation";
+import { CodexAccountPanel } from "./account/CodexAccountPanel";
+import { CodexActivityCard, reduceCodexActivity, emptyCodexActivity, type CodexTurnActivity } from "./activity/CodexActivityCard";
 import { FeatureRouteOutlet } from "./feature-parity/FeatureRouteOutlet";
 import { AttachmentService, type ComposerAttachment } from "../app/services/attachment-service";
 import { ModelSelectionService, type CodexModelOption } from "../app/services/model-selection-service";
@@ -442,6 +445,9 @@ export function CoCreateV01Experience() {
   );
   const [messagesByThread, setMessagesByThread] = useState<ThreadMessages>(createInitialMessagesByThread);
   const [isRunning, setIsRunning] = useState(false);
+  const [codexActivity, setCodexActivity] = useState<CodexTurnActivity | null>(null);
+  const [testLaunching, setTestLaunching] = useState(false);
+  const [testError, setTestError] = useState<string | null>(null);
   const [workspaceExperience, setWorkspaceExperience] = useState(workspaceExperienceService.getSnapshot());
   const [approvalState, setApprovalState] = useState(approvalRuntimeServiceRef.current.getSnapshot());
   const [contextBusy, setContextBusy] = useState(false);
@@ -457,8 +463,15 @@ export function CoCreateV01Experience() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [attachmentProgress, setAttachmentProgress] = useState<{ processed: number; total: number } | null>(null);
   const [models, setModels] = useState<CodexModelOption[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>("");
-  const [selectedEffort, setSelectedEffort] = useState<string>("");
+  const readStoredPref = (key: string) => {
+    try {
+      return window.localStorage.getItem(key) ?? "";
+    } catch {
+      return "";
+    }
+  };
+  const [selectedModel, setSelectedModel] = useState<string>(() => readStoredPref("cocreate.selectedModel"));
+  const [selectedEffort, setSelectedEffort] = useState<string>(() => readStoredPref("cocreate.selectedEffort"));
   const [upstreamSnapshot, setUpstreamSnapshot] = useState<UpstreamStabilityRuntimeSnapshot | null>(null);
   const [extensionCatalog, setExtensionCatalog] = useState<ExtensionCatalog>(emptyExtensionCatalog);
   const [extensionsLoading, setExtensionsLoading] = useState(false);
@@ -488,6 +501,10 @@ export function CoCreateV01Experience() {
   const activeMessages = messagesByThread[activeChatId] ?? [];
   const activeImplementationOperations = implementationRuntimeSnapshot.operations.filter((operation) => operation.conversationId === activeChatId);
   const hasUserMessages = activeMessages.some((message) => message.role === "user");
+  // Detect a web app Codex just built by extracting an .html path from the latest
+  // assistant reply (Codex reports it, e.g. "Abre [index.html](C:/…/index.html)").
+  const lastAssistantBody = [...activeMessages].reverse().find((message) => message.role === "assistant")?.body ?? "";
+  const builtWebPath = lastAssistantBody.match(/([A-Za-z]:[\\/][^\s)\]"']+\.html)/)?.[1] ?? null;
   const featureEntries = featureParityServiceRef.current.getEntries({
     environment: workspaceExperience.environment,
     codexStatus,
@@ -1390,6 +1407,7 @@ export function CoCreateV01Experience() {
     const visualInstruction = workspaceMode === "live" && Boolean(visualSnapshot.preview.url || visualSnapshot.selection);
 
     setIsRunning(true);
+    setCodexActivity(emptyCodexActivity);
     try {
       if (visualInstruction && window.overlayBridge) {
         const proposalRuntime = proposalRuntimeServiceRef.current;
@@ -1429,7 +1447,8 @@ export function CoCreateV01Experience() {
               task: workspaceExperience.task?.name,
               conversation: workspaceExperience.conversation?.title
             })
-          : null
+          : null,
+        onActivity: (event) => setCodexActivity((current) => reduceCodexActivity(current, event))
       });
       if (proposalWorkspaceId) {
         if (result.ok) await proposalRuntimeServiceRef.current.complete(proposalWorkspaceId);
@@ -1478,6 +1497,29 @@ export function CoCreateV01Experience() {
       });
     } finally {
       setIsRunning(false);
+      setCodexActivity(null);
+    }
+  };
+
+  const launchTest = async (target?: string | null) => {
+    if (!window.overlayBridge?.launchCodexTest || testLaunching) return;
+    setTestLaunching(true);
+    setTestError(null);
+    try {
+      await window.overlayBridge.launchCodexTest(target ? { target } : undefined);
+    } catch (cause) {
+      setTestError(cause instanceof Error ? cause.message : "No pude abrir la ventana de prueba.");
+    } finally {
+      setTestLaunching(false);
+    }
+  };
+
+  const openFolder = async (target?: string | null) => {
+    if (!window.overlayBridge?.openCodexFolder) return;
+    try {
+      await window.overlayBridge.openCodexFolder(target ? { target } : undefined);
+    } catch (cause) {
+      setTestError(cause instanceof Error ? cause.message : "No pude abrir la carpeta.");
     }
   };
 
@@ -1906,6 +1948,9 @@ export function CoCreateV01Experience() {
           ) : (
             <PrimaryNavigation entries={featureEntries.filter((entry) => entry.id !== "new-task")} activeRoute={activeRoute} collapsed onNavigate={navigate} />
           )}
+          <div className="workspace-sidebar-footer">
+            <CodexAccountPanel collapsed={isChatsCollapsed} />
+          </div>
           <div
             className={isResizingSidebar ? "workspace-resize-handle active" : "workspace-resize-handle"}
             role="separator"
@@ -2082,6 +2127,7 @@ export function CoCreateV01Experience() {
                     );
                   })
                 : null}
+              {codexActivity ? <CodexActivityCard activity={codexActivity} /> : null}
               {activeImplementationOperations.map((operation) => (
                 <ImplementationProgressCard
                   key={operation.id}
@@ -2094,6 +2140,19 @@ export function CoCreateV01Experience() {
                   onRecover={() => void implementationRuntimeServiceRef.current.recover(operation.id).then(() => workspaceExperienceService.refresh()).catch((cause) => setContextError(cause instanceof Error ? cause.message : "No pude recuperar la implementación."))}
                 />
               ))}
+              {window.overlayBridge?.launchCodexTest && hasUserMessages && !isRunning && !codexActivity && (builtWebPath || workspaceExperience.project?.hasDirectory) ? (
+                <div className="codex-test-bar">
+                  <button type="button" className="codex-test-button" disabled={testLaunching} onClick={() => void launchTest(builtWebPath)}>
+                    {testLaunching ? <LoaderCircle size={15} className="codex-activity-spin" /> : <Play size={15} />}
+                    <span>{testLaunching ? "Abriendo…" : "Probar"}</span>
+                  </button>
+                  <button type="button" className="codex-test-button codex-test-button-ghost" onClick={() => void openFolder(builtWebPath)}>
+                    <FolderOpen size={15} />
+                    <span>Abrir en carpeta</span>
+                  </button>
+                  {testError ? <span className="codex-test-error" role="alert">{testError}</span> : null}
+                </div>
+              ) : null}
             </section>
 
             {workspaceMode === "chat" ? (
@@ -2218,8 +2277,15 @@ export function CoCreateV01Experience() {
                       <span className="sr-only">Modelo para el próximo mensaje</span>
                       <select value={selectedModel} onChange={(event) => {
                         const model = models.find((option) => option.model === event.target.value);
+                        const nextEffort = model?.defaultReasoningEffort ?? "";
                         setSelectedModel(event.target.value);
-                        setSelectedEffort(model?.defaultReasoningEffort ?? "");
+                        setSelectedEffort(nextEffort);
+                        try {
+                          window.localStorage.setItem("cocreate.selectedModel", event.target.value);
+                          window.localStorage.setItem("cocreate.selectedEffort", nextEffort);
+                        } catch {
+                          /* ignore */
+                        }
                       }}>
                         {models.map((model) => <option key={model.id} value={model.model}>{model.displayName}</option>)}
                       </select>
@@ -2230,7 +2296,14 @@ export function CoCreateV01Experience() {
                   {models.find((model) => model.model === selectedModel)?.supportedReasoningEfforts.length ? (
                     <label className="model-selector effort-selector">
                       <span className="sr-only">Esfuerzo de razonamiento</span>
-                      <select value={selectedEffort} onChange={(event) => setSelectedEffort(event.target.value)}>
+                      <select value={selectedEffort} onChange={(event) => {
+                        setSelectedEffort(event.target.value);
+                        try {
+                          window.localStorage.setItem("cocreate.selectedEffort", event.target.value);
+                        } catch {
+                          /* ignore */
+                        }
+                      }}>
                         {models.find((model) => model.model === selectedModel)!.supportedReasoningEfforts.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
                       </select>
                     </label>

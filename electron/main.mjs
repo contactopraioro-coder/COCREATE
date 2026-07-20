@@ -1,9 +1,13 @@
 import "dotenv/config";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, session } from "electron";
 import { config as loadEnv } from "dotenv";
-import { writeFile } from "node:fs/promises";
+import { writeFile, mkdir, access } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const execFileAsync = promisify(execFile);
 import { collectExecutionOutput, createNodeCodexAdapter } from "../shared/codex-runner.js";
 import { createCodexAppServerProcessManager } from "../infrastructure/codex-app-server/process-manager.js";
 import { createCodexAppServerAdapter } from "../infrastructure/codex-app-server/app-server-adapter.js";
@@ -16,6 +20,9 @@ import { createApprovalBroker } from "./approval-broker.mjs";
 import { createAppStateStore } from "./app-state-store.mjs";
 import { registerAppIpcHandlers } from "./app-ipc.mjs";
 import { registerCodexIpcHandlers } from "./codex-ipc.mjs";
+import { registerCodexAuthIpcHandlers } from "./codex-auth-ipc.mjs";
+import { registerCodexTestIpcHandlers } from "./codex-test-ipc.mjs";
+import { registerLiveOrganizerIpcHandlers } from "./live-organizer-ipc.mjs";
 import { createFoundationStore } from "./foundation-store.mjs";
 import { registerIdentityIpcHandlers } from "./identity-ipc.mjs";
 import { createIdentityStore } from "./identity-store.mjs";
@@ -37,6 +44,12 @@ import { createImplementationRuntime, registerImplementationRuntimeIpc } from ".
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 loadEnv({ path: path.join(rootDir, ".env.local"), override: false });
+// In a packaged build the working directory isn't the project root, so the
+// top-level `dotenv/config` won't find .env. It ships as an extra resource and
+// is loaded here (config + API keys + the Codex binary path).
+if (process.resourcesPath) {
+  loadEnv({ path: path.join(process.resourcesPath, ".env"), override: false });
+}
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const defaultGeminiModel = process.env.GEMINI_MODEL ?? "gemini-3.5-flash";
 const codexBinary = process.env.CODEX_BINARY ?? "codex";
@@ -79,6 +92,9 @@ const getImplementationRuntimePath = () => path.join(app.getPath("userData"), "s
 const getRuntimeWorkingDirectory = () => app.isPackaged ? app.getPath("userData") : rootDir;
 
 let disposeCodexIpc = () => undefined;
+let disposeCodexAuthIpc = () => undefined;
+let disposeCodexTestIpc = () => undefined;
+let disposeLiveOrganizerIpc = () => undefined;
 let disposeAppIpc = () => undefined;
 let disposeWorkspaceIpc = () => undefined;
 let disposeIdentityIpc = () => undefined;
@@ -368,11 +384,35 @@ async function bootstrap() {
   });
   const approvalBroker = createApprovalBroker({ ipcMain, BrowserWindow });
   const runtime = createRuntime({ requestApproval: approvalBroker.requestApproval });
+
+  // Resolves the working directory Codex runs in. When the conversation is bound
+  // to a real project folder we use it; otherwise we isolate work in a per-
+  // conversation folder under the app's user-data dir so Codex NEVER operates in
+  // (or reads) CoCreate's own source tree.
+  const resolveWorkspaceRoot = async () => {
+    const context = await runtime.workspaceRuntime.getCodexExecutionContext();
+    if (context.rootPath) return context.rootPath;
+    const isolationId = context.conversationId ?? context.taskId ?? "default";
+    const dir = path.join(app.getPath("userData"), "workspaces", isolationId);
+    await mkdir(dir, { recursive: true }).catch(() => undefined);
+    // Codex refuses to run outside a trusted (git) directory unless
+    // --skip-git-repo-check is passed. Isolated workspaces start empty, so we
+    // `git init` them once. This also gives the user's workspace real version
+    // control. Guarded on the absence of .git so we don't re-init every run.
+    const alreadyGit = await access(path.join(dir, ".git")).then(() => true).catch(() => false);
+    if (!alreadyGit) {
+      await execFileAsync("git", ["init"], { cwd: dir }).catch((error) => {
+        console.warn(`[workspace] git init failed for ${dir}:`, error?.message ?? error);
+      });
+    }
+    return dir;
+  };
+
   const attachmentBroker = createAttachmentBroker({ ipcMain, dialog, browserWindow: BrowserWindow });
   disposeAttachmentBroker = () => attachmentBroker.dispose();
   disposeGitContextIpc = registerGitContextIpc({
     ipcMain,
-    resolveCwd: async () => (await runtime.workspaceRuntime.getCodexExecutionContext()).rootPath ?? null
+    resolveCwd: async () => resolveWorkspaceRoot()
   });
   const upstreamCapabilitiesIpc = registerUpstreamCapabilitiesIpc({
     ipcMain,
@@ -392,7 +432,51 @@ async function bootstrap() {
     ipcMain,
     browserWindow: BrowserWindow,
     runtime: runtime.proposalRuntime,
-    resolveSourceRoot: async () => (await runtime.workspaceRuntime.getCodexExecutionContext()).rootPath ?? null
+    resolveSourceRoot: async () => resolveWorkspaceRoot()
+  });
+  disposeCodexTestIpc = registerCodexTestIpcHandlers({
+    ipcMain,
+    resolveProjectRoot: async () => resolveWorkspaceRoot(),
+    // Live-coding organizer runs on Gemini when a Google key is present (the
+    // OpenAI key path stays as fallback). Codex coding is unaffected — it uses the
+    // ChatGPT/Codex plan, not this key.
+    organizer: process.env.GEMINI_API_KEY?.trim()
+      ? {
+          apiKey: process.env.GEMINI_API_KEY,
+          model: "gemini-3.5-flash",
+          baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai"
+        }
+      : { apiKey: process.env.OPENAI_API_KEY, model: process.env.OPENAI_MODEL },
+    deepgram: { apiKey: process.env.DEEPGRAM_API_KEY },
+    runLiveCodex: async (prompt, cwd, onEvent) => {
+      let output = "";
+      const handle = await runtime.codexAdapter.execute(
+        { prompt, cwd: cwd || (await resolveWorkspaceRoot()), origin: "live-coding" },
+        (event) => {
+          if (event?.type === "execution.output" && typeof event.chunk === "string") output += event.chunk;
+          if (onEvent) {
+            try {
+              onEvent(event);
+            } catch {
+              /* ignore observer errors */
+            }
+          }
+        }
+      );
+      const terminal = await handle.completed;
+      return {
+        ok: terminal.type === "execution.completed",
+        output:
+          terminal.type === "execution.completed"
+            ? terminal.output || output
+            : terminal.error?.safeMessage || output
+      };
+    }
+  });
+  disposeLiveOrganizerIpc = registerLiveOrganizerIpcHandlers({
+    ipcMain,
+    apiKey: process.env.OPENAI_API_KEY,
+    model: process.env.OPENAI_MODEL
   });
   disposeImplementationRuntimeIpc = registerImplementationRuntimeIpc({
     ipcMain,
@@ -475,10 +559,9 @@ async function bootstrap() {
   });
 
   ipcMain.handle("codex:run", async (_event, payload) => {
-    const workspaceContext = await runtime.workspaceRuntime.getCodexExecutionContext();
     const result = await collectExecutionOutput(runtime.codexAdapter, {
       prompt: payload?.prompt ?? "",
-      cwd: workspaceContext.rootPath ?? getRuntimeWorkingDirectory(),
+      cwd: await resolveWorkspaceRoot(),
       origin: "legacy-bridge",
       metadata: { workspaceContext }
     });
@@ -498,10 +581,18 @@ async function bootstrap() {
     return result;
   });
 
+  disposeCodexAuthIpc = registerCodexAuthIpcHandlers({
+    ipcMain,
+    binary: codexBinary
+  });
+
   disposeCodexIpc = registerCodexIpcHandlers({
     ipcMain,
     codexAdapter: runtime.codexAdapter,
-    resolveExecutionContext: () => runtime.workspaceRuntime.getCodexExecutionContext(),
+    resolveExecutionContext: async () => {
+      const context = await runtime.workspaceRuntime.getCodexExecutionContext();
+      return { ...context, rootPath: await resolveWorkspaceRoot() };
+    },
     resolveAttachments: (tokens, ownerWindowId) => attachmentBroker.resolve(tokens, ownerWindowId),
     resolveSkills: (tokens, ownerWindowId) => upstreamCapabilitiesIpc.resolveSkillInputs(tokens, ownerWindowId),
     resolveProposalWorkspace: (proposalWorkspaceId, ownerWindowId) =>
@@ -603,6 +694,9 @@ async function bootstrap() {
 
   app.on("before-quit", async () => {
     disposeCodexIpc();
+    disposeCodexAuthIpc();
+    disposeCodexTestIpc();
+    disposeLiveOrganizerIpc();
     disposeAppIpc();
     disposeWorkspaceIpc();
     disposeIdentityIpc();

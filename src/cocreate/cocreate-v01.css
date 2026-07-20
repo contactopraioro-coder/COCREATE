@@ -970,7 +970,7 @@ button:disabled {
   min-height: calc(100vh - 32px);
   padding: 14px 12px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 14px;
   border: 1px solid;
   border-radius: 26px;
@@ -3975,4 +3975,302 @@ button:disabled {
   .implementation-recovery button,
   .implementation-card > footer button { min-height: 42px; flex: 1 1 100%; }
   .implementation-recovery { align-items: stretch; flex-direction: column; }
+}
+
+/* Codex account panel (sidebar footer) */
+.workspace-sidebar-footer {
+  min-width: 0;
+}
+
+.codex-account {
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--brand-accent) 14%, transparent);
+  background: color-mix(in srgb, var(--brand-accent) 6%, transparent);
+  overflow: hidden;
+}
+
+.codex-account-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 0;
+}
+
+.codex-account-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 40%, transparent);
+  flex: 0 0 auto;
+}
+
+.codex-account-dot.connected {
+  background: #34d399;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #34d399 22%, transparent);
+}
+
+.codex-account-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.codex-account-summary:hover {
+  background: color-mix(in srgb, var(--brand-accent) 10%, transparent);
+}
+
+.codex-account-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+  line-height: 1.25;
+}
+
+.codex-account-label strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.codex-account-label small {
+  font-size: 11px;
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.codex-account-chevron {
+  flex: 0 0 auto;
+  opacity: 0.6;
+  transition: transform 0.18s ease;
+}
+
+.codex-account-chevron.open {
+  transform: rotate(180deg);
+}
+
+.codex-account-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 12px 12px;
+}
+
+.codex-account-action,
+.codex-account-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--brand-accent) 22%, transparent);
+  background: color-mix(in srgb, var(--brand-accent) 12%, transparent);
+  color: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.codex-account-action:hover:not(:disabled),
+.codex-account-secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand-accent) 20%, transparent);
+}
+
+.codex-account-secondary {
+  background: transparent;
+  border-color: color-mix(in srgb, currentColor 16%, transparent);
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.codex-account-action:disabled,
+.codex-account-secondary:disabled,
+.codex-account-key-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.codex-account-key-form {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.codex-account-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 9px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.codex-account-field svg {
+  flex: 0 0 auto;
+  opacity: 0.55;
+}
+
+.codex-account-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 12px;
+  padding: 8px 0;
+  outline: none;
+}
+
+.codex-account-key-form button {
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--brand-accent) 26%, transparent);
+  background: color-mix(in srgb, var(--brand-accent) 16%, transparent);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.codex-account-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.6;
+}
+
+.codex-account-error,
+.codex-account-ok {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.codex-account-error {
+  color: #f87171;
+}
+
+.codex-account-ok {
+  color: #34d399;
+}
+
+.codex-account .spin {
+  animation: codex-account-spin 0.8s linear infinite;
+}
+
+@keyframes codex-account-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Live Codex activity card (runtime states while a turn is in progress) */
+.codex-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.codex-activity-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.codex-activity-spin {
+  flex: 0 0 auto;
+  animation: codex-account-spin 0.8s linear infinite;
+}
+
+.codex-activity-output {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.codex-activity-output code {
+  font-family: inherit;
+}
+
+.codex-activity-waiting {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  opacity: 0.6;
+}
+
+/* "Probar" (test) action bar shown after a task completes */
+.codex-test-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px 2px;
+}
+
+.codex-test-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--brand-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--brand-accent) 20%, transparent);
+  color: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.codex-test-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand-accent) 30%, transparent);
+}
+
+.codex-test-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.codex-test-button-ghost {
+  border-color: color-mix(in srgb, currentColor 18%, transparent);
+  background: transparent;
+  font-weight: 500;
+}
+
+.codex-test-button-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.codex-test-error {
+  font-size: 12px;
+  color: #f87171;
 }

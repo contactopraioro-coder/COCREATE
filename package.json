@@ -2,6 +2,8 @@
   "name": "cocreate-desktop",
   "version": "0.0.1",
   "private": true,
+  "description": "CoCreate — crea código hablando con Codex, en vivo.",
+  "author": "CoCreate",
   "type": "module",
   "main": "electron/main.mjs",
   "scripts": {
@@ -25,6 +27,7 @@
     "qa:workspace:desktop": "node scripts/workspace-experience-desktop-gate.mjs",
     "smoke:desktop": "node scripts/desktop-smoke.mjs",
     "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "dist:win": "npm run build && electron-builder --win",
     "start": "electron electron/main.mjs"
   },
   "dependencies": {
@@ -50,7 +53,7 @@
     "appId": "com.cocreate.desktop",
     "productName": "CoCreate",
     "directories": {
-      "output": "release"
+      "output": "C:/Users/felip/CoCreateBuild"
     },
     "files": [
       "electron/**/*",
@@ -60,12 +63,30 @@
       "overlay-dist/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": ".env",
+        "to": ".env"
+      }
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
         "dmg",
         "zip"
       ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "CoCreate"
     }
   }
 }

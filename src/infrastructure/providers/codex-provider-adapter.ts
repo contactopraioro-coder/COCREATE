@@ -1,16 +1,27 @@
 import { createFunctionProviderAdapter, type ProviderAdapter } from "../../../shared/provider-runtime.js";
 import type { CodexConversationService } from "../../app/services/codex-conversation-service.js";
 
+export type CodexActivityEvent = {
+  type: string;
+  stage?: string;
+  message?: string;
+  stream?: string;
+  chunk?: string;
+};
+
 type CodexProviderOptions = {
   conversationService: CodexConversationService;
   origin: "desktop-renderer" | "web-renderer";
   clientId?: string;
+  // Live execution-event callback so the chat UI can render runtime states
+  // (starting, progress messages, streamed output) as Codex works.
+  onActivity?: (event: CodexActivityEvent) => void;
 };
 
 function runConversation(
   options: CodexProviderOptions,
   request: any,
-  onChunk?: (chunk: string) => void
+  callbacks?: { onEvent?: (event: CodexActivityEvent) => void }
 ) {
   return options.conversationService.runPrompt(
     {
@@ -29,15 +40,7 @@ function runConversation(
       proposalContext: request.input?.proposalContext && typeof request.input.proposalContext === "object" ? request.input.proposalContext : null,
       signal: request.signal
     },
-    onChunk
-      ? {
-          onEvent(event) {
-            if (event.type === "execution.output") {
-              onChunk(event.chunk);
-            }
-          }
-        }
-      : undefined
+    callbacks
   );
 }
 
@@ -65,7 +68,11 @@ export function createCodexProviderAdapter(options: CodexProviderOptions): Provi
         : { status: "Unavailable" as const, message: status.error ?? "Codex no está disponible." };
     },
     async execute(request) {
-      const result = await runConversation(options, request);
+      const result = await runConversation(
+        options,
+        request,
+        options.onActivity ? { onEvent: (event) => options.onActivity?.(event) } : undefined
+      );
       return { output: result.output, metadata: { transport: options.origin } };
     },
     async *stream(request) {
@@ -74,9 +81,14 @@ export function createCodexProviderAdapter(options: CodexProviderOptions): Provi
       let completed = false;
       let failure: unknown = null;
       const wake = () => waiters.splice(0).forEach((resolve) => resolve());
-      void runConversation(options, request, (chunk) => {
-        chunks.push(chunk);
-        wake();
+      void runConversation(options, request, {
+        onEvent: (event) => {
+          options.onActivity?.(event);
+          if (event.type === "execution.output" && typeof event.chunk === "string") {
+            chunks.push(event.chunk);
+            wake();
+          }
+        }
       })
         .catch((error) => {
           failure = error;

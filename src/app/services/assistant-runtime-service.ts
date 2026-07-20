@@ -33,6 +33,7 @@ export class AssistantRuntimeService {
     visualContext?: Record<string, unknown> | null;
     proposalWorkspaceId?: string;
     proposalContext?: Record<string, unknown> | null;
+    onActivity?: (event: { type: string; stage?: string; message?: string; stream?: string; chunk?: string }) => void;
   }) {
     const routing = this.capabilityRouter.resolve(input);
     const webRequestId = routing.primaryCapability === "web" ? createTrustedWebRequestId("web") : undefined;
@@ -48,7 +49,8 @@ export class AssistantRuntimeService {
       codexConversationService: this.codexConversationService,
       origin: input.origin,
       clientId: input.clientId,
-      development
+      development,
+      onActivity: input.onActivity
     });
 
     if (webRequestId && input.origin === "web-renderer") {

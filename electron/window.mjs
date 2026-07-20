@@ -30,6 +30,9 @@ export async function createMainWindow({
 
   if (rendererUrl) {
     await mainWindow.loadURL(rendererUrl);
+    // In development (rendererUrl is only set by the dev launcher) open DevTools
+    // detached so logs are visible and copyable without disrupting the layout.
+    mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     await mainWindow.loadFile(distIndexPath);
   }

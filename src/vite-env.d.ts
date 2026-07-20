@@ -17,6 +17,14 @@ import type {
 } from "./app/services/implementation-runtime-service";
 
 declare global {
+  type CodexAuthStatus = {
+    authenticated: boolean;
+    method: "apikey" | "chatgpt" | "none";
+    source: "custom" | "env" | "chatgpt" | "none";
+    hasCustomKey: boolean;
+    hasEnvKey: boolean;
+    keyPreview: string | null;
+  };
   interface Window {
     overlayBridge?: {
       getConfig: () => Promise<{
@@ -227,6 +235,17 @@ declare global {
       >;
       refreshUpstreamCapabilities: () => Promise<import("./app/services/upstream-stability-service").UpstreamStabilityRuntimeSnapshot>;
       onUpstreamCapabilitiesChanged: (listener: (event: Record<string, unknown>) => void) => () => void;
+      getCodexAuthStatus: () => Promise<CodexAuthStatus>;
+      loginCodexApiKey: (payload: { apiKey: string }) => Promise<CodexAuthStatus>;
+      loginCodexChatgpt: () => Promise<CodexAuthStatus>;
+      useDefaultCodexKey: () => Promise<CodexAuthStatus>;
+      logoutCodex: () => Promise<CodexAuthStatus>;
+      onCodexAuthChanged: (listener: (status: CodexAuthStatus) => void) => () => void;
+      launchCodexTest: (payload?: { target?: string }) => Promise<{ ok: boolean; url: string; mode: "dev-server" | "static"; script?: string }>;
+      openCodexFolder: (payload?: { target?: string }) => Promise<{ ok: boolean }>;
+      organizeLivePrompt: (payload: { transcript: string; cursorContext?: string }) => Promise<{
+        improvements: Array<{ title: string; body: string; status: "complete" | "in_progress"; isFollowUp: boolean }>;
+      }>;
       getVoiceStatus: () => Promise<{ status: string; message?: string }>;
       getScreenCapturePermission?: () => Promise<ScreenPermissionStatus>;
       openScreenCaptureSettings?: () => Promise<boolean>;

@@ -45,6 +45,7 @@ export function createOpenAITranscriptionProvider(options = {}) {
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
+        console.error("[transcribe] OpenAI error", response.status, "bytes:", buffer.length, "mime:", mimeType, "model:", model, "->", JSON.stringify(payload)?.slice(0, 400));
         throw createProviderError("PROVIDER_UPSTREAM_ERROR", "OpenAI transcription failed.", {
           provider: "openai-transcription",
           kind: response.status === 429 ? "rate-limit" : "upstream",

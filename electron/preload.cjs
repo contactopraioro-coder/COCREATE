@@ -3,6 +3,7 @@ const CODEX_IPC_CHANNELS = require("../shared/codex-ipc-channels.cjs");
 const APPROVAL_IPC_CHANNELS = require("../shared/approval-ipc-channels.cjs");
 const TRUSTED_WEB_IPC_CHANNELS = require("../shared/trusted-web-ipc-channels.cjs");
 const UPSTREAM_CAPABILITY_CHANNELS = require("../shared/upstream-capabilities-ipc-channels.cjs");
+const CODEX_AUTH_CHANNELS = require("../shared/codex-auth-ipc-channels.cjs");
 
 contextBridge.exposeInMainWorld("overlayBridge", {
   getConfig() {
@@ -120,6 +121,35 @@ contextBridge.exposeInMainWorld("overlayBridge", {
     const wrapped = (_event, payload) => listener(payload);
     ipcRenderer.on(UPSTREAM_CAPABILITY_CHANNELS.changed, wrapped);
     return () => ipcRenderer.removeListener(UPSTREAM_CAPABILITY_CHANNELS.changed, wrapped);
+  },
+  getCodexAuthStatus() {
+    return ipcRenderer.invoke(CODEX_AUTH_CHANNELS.status);
+  },
+  loginCodexApiKey(payload) {
+    return ipcRenderer.invoke(CODEX_AUTH_CHANNELS.loginApiKey, payload);
+  },
+  loginCodexChatgpt() {
+    return ipcRenderer.invoke(CODEX_AUTH_CHANNELS.loginChatgpt);
+  },
+  useDefaultCodexKey() {
+    return ipcRenderer.invoke(CODEX_AUTH_CHANNELS.useDefault);
+  },
+  logoutCodex() {
+    return ipcRenderer.invoke(CODEX_AUTH_CHANNELS.logout);
+  },
+  onCodexAuthChanged(listener) {
+    const wrapped = (_event, payload) => listener(payload);
+    ipcRenderer.on(CODEX_AUTH_CHANNELS.changed, wrapped);
+    return () => ipcRenderer.removeListener(CODEX_AUTH_CHANNELS.changed, wrapped);
+  },
+  launchCodexTest(payload) {
+    return ipcRenderer.invoke("cocreate:test:launch", payload);
+  },
+  openCodexFolder(payload) {
+    return ipcRenderer.invoke("cocreate:test:open-folder", payload);
+  },
+  organizeLivePrompt(payload) {
+    return ipcRenderer.invoke("cocreate:live:organize", payload);
   },
   getVoiceStatus() {
     return ipcRenderer.invoke("cocreate:voice:status");

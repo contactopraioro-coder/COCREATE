@@ -102,6 +102,11 @@ export function createNodeCodexAdapter(options = {}) {
   const baseCwd = options.cwd ?? process.cwd();
   const defaultOrigin = options.defaultOrigin ?? "legacy-bridge";
   const defaultTimeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
+  // Sandbox mode for `codex exec`. On Windows the OS-level `workspace-write`
+  // sandbox silently degrades to read-only (its helper isn't active), so Codex
+  // can read but never write files. Set CODEX_SANDBOX_MODE=danger-full-access
+  // to let Codex actually create/modify files in the selected folder.
+  const sandboxMode = options.sandboxMode ?? process.env.CODEX_SANDBOX_MODE ?? "workspace-write";
   const spawnFactory = options.spawnFactory ?? spawn;
   const execFileAsync = options.execFileAsync ?? execFileAsyncDefault;
   const activeExecutions = new Map();
@@ -133,6 +138,8 @@ export function createNodeCodexAdapter(options = {}) {
     const origin = request.origin ?? defaultOrigin;
     const timeoutMs = request.timeoutMs ?? defaultTimeoutMs;
     const ownerId = request.ownerId?.trim() || null;
+    const model = typeof request.metadata?.model === "string" ? request.metadata.model.trim() : "";
+    const effort = typeof request.metadata?.effort === "string" ? request.metadata.effort.trim() : "";
     const runDir = await mkdtemp(path.join(tmpdir(), "cocreate-codex-"));
     const lastMessagePath = path.join(runDir, "last-message.txt");
 
@@ -236,23 +243,20 @@ export function createNodeCodexAdapter(options = {}) {
       message: "Inicializando ejecución de Codex."
     });
 
-    child = spawnFactory(
-      binary,
-      [
-        "exec",
-        "--cd",
-        cwd,
-        "--sandbox",
-        "workspace-write",
-        "--output-last-message",
-        lastMessagePath,
-        "-"
-      ],
-      {
-        cwd,
-        stdio: ["pipe", "pipe", "pipe"]
-      }
-    );
+    const execArgs = ["exec", "--cd", cwd, "--sandbox", sandboxMode];
+    if (model) {
+      execArgs.push("--model", model);
+    }
+    if (effort) {
+      // Config override; codex parses the value as TOML, falling back to a literal string.
+      execArgs.push("-c", `model_reasoning_effort="${effort}"`);
+    }
+    execArgs.push("--output-last-message", lastMessagePath, "-");
+
+    child = spawnFactory(binary, execArgs, {
+      cwd,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
 
     timeoutId = setTimeout(() => {
       timeoutTriggered = true;

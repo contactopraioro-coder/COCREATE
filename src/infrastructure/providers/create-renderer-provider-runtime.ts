@@ -7,7 +7,7 @@ import {
   type ProviderCapabilities
 } from "../../../shared/provider-runtime.js";
 import type { CodexConversationService } from "../../app/services/codex-conversation-service.js";
-import { createCodexProviderAdapter, createOpenAIWebGatewayAdapter } from "./codex-provider-adapter.js";
+import { createCodexProviderAdapter, createOpenAIWebGatewayAdapter, type CodexActivityEvent } from "./codex-provider-adapter.js";
 import { createTrustedWebGatewayAdapter } from "./trusted-web-gateway-adapter.js";
 
 type AssistantTools = {
@@ -48,6 +48,7 @@ export function createRendererProviderRuntime(options: {
   origin: "desktop-renderer" | "web-renderer";
   clientId?: string;
   development?: boolean;
+  onActivity?: (event: CodexActivityEvent) => void;
 }) {
   const registry = new ProviderRegistry([
     toolAdapter("datetime-tool", "DateTime Tool", "datetime", () => options.tools.dateTimeTool.getCurrentDateTime()),
@@ -59,7 +60,8 @@ export function createRendererProviderRuntime(options: {
     createCodexProviderAdapter({
       conversationService: options.codexConversationService,
       origin: options.origin,
-      clientId: options.clientId
+      clientId: options.clientId,
+      onActivity: options.onActivity
     })
   );
   registry.register(factory.create("codex"));
@@ -100,10 +102,16 @@ export function createRendererProviderRuntime(options: {
 
   return new ProviderRuntime({
     registry,
+    // Coding turns run the full Codex agent (cold start + reasoning model), which
+    // routinely exceeds the 30s default. Give it a 10-minute ceiling, matching
+    // codex exec's own default execution timeout.
+    timeoutMs: 10 * 60 * 1000,
     observer: options.development
       ? (event) => {
-          const logger = event.type === "provider.failed" ? console.error : console.debug;
-          logger("[ProviderRuntime]", event);
+          // Use console.info (not debug) for non-failures so the full execution
+          // flow is visible in DevTools without enabling the Verbose level.
+          const logger = event.type === "provider.failed" ? console.error : console.info;
+          logger("[ProviderRuntime]", event.type, event);
         }
       : undefined
   });

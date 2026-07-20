@@ -50,6 +50,16 @@ export class DesktopCodexAdapter implements CodexAdapter {
         return;
       }
 
+      if (import.meta.env.DEV) {
+        const e = event as unknown as Record<string, unknown>;
+        const detail =
+          event.type === "execution.progress" ? e.message
+          : event.type === "execution.output" ? `${event.stream}: ${String(e.chunk ?? "").slice(0, 200)}`
+          : event.type === "execution.failed" ? (e.error as { safeMessage?: string } | undefined)?.safeMessage
+          : e.stage;
+        console.info(`[Codex] ${event.type}`, detail ?? "", event);
+      }
+
       void Promise.resolve(observer(event)).then(() => {
         if (isTerminalEvent(event)) {
           unsubscribe();
